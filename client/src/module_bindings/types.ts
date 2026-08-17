@@ -16,12 +16,31 @@ export const FileBlob = __t.object("FileBlob", {
 });
 export type FileBlob = __Infer<typeof FileBlob>;
 
+export const FileChunk = __t.object("FileChunk", {
+  id: __t.u64(),
+  fileId: __t.u64(),
+  chunkIndex: __t.u32(),
+  content: __t.byteArray(),
+});
+export type FileChunk = __Infer<typeof FileChunk>;
+
 export const StoredFile = __t.object("StoredFile", {
   id: __t.u64(),
   name: __t.string(),
   mimeType: __t.string(),
   sizeBytes: __t.u64(),
   createdAt: __t.timestamp(),
+  ready: __t.bool(),
+  chunkCount: __t.u32(),
 });
 export type StoredFile = __Infer<typeof StoredFile>;
+
+export const UploadSession = __t.object("UploadSession", {
+  uploadToken: __t.string(),
+  fileId: __t.u64(),
+  nextChunkIndex: __t.u32(),
+  receivedBytes: __t.u64(),
+  createdAt: __t.timestamp(),
+});
+export type UploadSession = __Infer<typeof UploadSession>;
 

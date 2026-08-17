@@ -22,9 +22,20 @@ import {
 import { useSpacetimeDB, useTable } from 'spacetimedb/react';
 import { DbConnection, tables, type SubscriptionHandle } from './module_bindings';
 import type { StoredFile } from './module_bindings/types';
+import { UploadTimeoutError, uploadFileInChunks } from './upload';
 
 type ViewMode = 'list' | 'grid';
 type Notice = { type: 'error' | 'success'; message: string } | null;
+type UploadProgress = {
+  fileName: string;
+  fileIndex: number;
+  fileCount: number;
+  fileUploadedBytes: number;
+  fileSizeBytes: number;
+  totalUploadedBytes: number;
+  totalSizeBytes: number;
+  percent: number;
+};
 
 function formatBytes(size: number | bigint) {
   const value = typeof size === 'bigint' ? Number(size) : size;
@@ -68,27 +79,30 @@ function App() {
   const [search, setSearch] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
   const [dragActive, setDragActive] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const noticeTimerRef = useRef<number | null>(null);
   const uploadInFlightRef = useRef(false);
 
+  const readyFiles = useMemo(() => files.filter((file) => file.ready), [files]);
+
   const sortedFiles = useMemo(
     () =>
-      [...files]
+      [...readyFiles]
         .filter((file) => file.name.toLowerCase().includes(search.toLowerCase().trim()))
         .sort((a, b) => {
           const aTime = a.createdAt.microsSinceUnixEpoch;
           const bTime = b.createdAt.microsSinceUnixEpoch;
           return aTime === bTime ? 0 : aTime > bTime ? -1 : 1;
         }),
-    [files, search]
+    [readyFiles, search]
   );
 
   const totalSize = useMemo(
-    () => files.reduce((sum, file) => sum + Number(file.sizeBytes), 0),
-    [files]
+    () => readyFiles.reduce((sum, file) => sum + Number(file.sizeBytes), 0),
+    [readyFiles]
   );
 
   const showNotice = useCallback((nextNotice: Notice) => {
@@ -128,28 +142,57 @@ function App() {
 
       uploadInFlightRef.current = true;
       setIsUploading(true);
-      setNotice(null);
+      showNotice(null);
       let uploadedCount = 0;
-      const failedFiles: string[] = [];
-      for (const file of filesToUpload) {
-        try {
-          const bytes = new Uint8Array(await file.arrayBuffer());
-          await connection.reducers.uploadFile({
-            name: file.name,
-            mimeType: file.type || 'application/octet-stream',
-            sizeBytes: BigInt(file.size),
-            content: bytes,
-          });
-          uploadedCount += 1;
-        } catch {
-          failedFiles.push(file.name);
-        }
-      }
-
+      const failedFiles: Array<{ name: string; reason: string }> = [];
+      const totalSizeBytes = filesToUpload.reduce((sum, file) => sum + file.size, 0);
+      let completedBytes = 0;
       try {
+        for (const [index, file] of filesToUpload.entries()) {
+          const updateProgress = (fileUploadedBytes: number) => {
+            const totalUploadedBytes = completedBytes + fileUploadedBytes;
+            const percent = totalSizeBytes === 0
+              ? Math.round(((index + (fileUploadedBytes === file.size ? 1 : 0)) / filesToUpload.length) * 100)
+              : Math.round((totalUploadedBytes / totalSizeBytes) * 100);
+            setUploadProgress({
+              fileName: file.name,
+              fileIndex: index + 1,
+              fileCount: filesToUpload.length,
+              fileUploadedBytes,
+              fileSizeBytes: file.size,
+              totalUploadedBytes,
+              totalSizeBytes,
+              percent,
+            });
+          };
+
+          try {
+            await uploadFileInChunks({
+              file,
+              reducers: connection.reducers,
+              onProgress: updateProgress,
+            });
+            completedBytes += file.size;
+            uploadedCount += 1;
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : '未知错误';
+            failedFiles.push({ name: file.name, reason });
+            if (error instanceof UploadTimeoutError) {
+              for (const remainingFile of filesToUpload.slice(index + 1)) {
+                failedFiles.push({ name: remainingFile.name, reason: '上传连接已中断' });
+              }
+              break;
+            }
+          }
+        }
+
         if (failedFiles.length) {
           const uploadedText = uploadedCount ? `已上传 ${uploadedCount} 个；` : '';
-          showNotice({ type: 'error', message: `${uploadedText}${failedFiles.length} 个文件上传失败。` });
+          const detail = failedFiles.length === 1 ? `（${failedFiles[0].reason}）` : '';
+          showNotice({
+            type: 'error',
+            message: `${uploadedText}${failedFiles.length} 个文件上传失败${detail}。`,
+          });
         } else {
           showNotice({
             type: 'success',
@@ -159,6 +202,7 @@ function App() {
       } finally {
         uploadInFlightRef.current = false;
         setIsUploading(false);
+        setUploadProgress(null);
         if (inputRef.current) inputRef.current.value = '';
       }
     },
@@ -188,22 +232,62 @@ function App() {
       let canUnsubscribe = false;
       let subscription!: SubscriptionHandle;
       try {
-        const bytes = await new Promise<Uint8Array>((resolve, reject) => {
+        const parts = await new Promise<Uint8Array[]>((resolve, reject) => {
+          const timer = window.setTimeout(() => reject(new Error('读取文件内容超时，请重试。')), 30_000);
+          const fail = (message: string) => {
+            window.clearTimeout(timer);
+            reject(new Error(message));
+          };
+
+          if (file.chunkCount > 0) {
+            subscription = connection.subscriptionBuilder()
+              .onApplied((ctx) => {
+                canUnsubscribe = true;
+                window.clearTimeout(timer);
+                const chunks = [...ctx.db.fileChunk.iter()]
+                  .filter((chunk) => chunk.fileId === file.id)
+                  .sort((a, b) => a.chunkIndex - b.chunkIndex);
+                if (
+                  chunks.length !== file.chunkCount ||
+                  chunks.some((chunk, index) => chunk.chunkIndex !== index)
+                ) {
+                  reject(new Error('文件分块不完整。'));
+                  return;
+                }
+                const downloadedBytes = chunks.reduce((sum, chunk) => sum + chunk.content.byteLength, 0);
+                if (BigInt(downloadedBytes) !== file.sizeBytes) {
+                  reject(new Error('文件内容大小不匹配。'));
+                  return;
+                }
+                resolve(chunks.map((chunk) => new Uint8Array(chunk.content)));
+              })
+              .onError(() => fail('读取文件内容失败。'))
+              .subscribe([tables.fileChunk.where((row) => row.fileId.eq(file.id))]);
+            return;
+          }
+
+          if (file.sizeBytes === 0n) {
+            window.clearTimeout(timer);
+            resolve([new Uint8Array()]);
+            return;
+          }
+
           subscription = connection.subscriptionBuilder()
             .onApplied((ctx) => {
               canUnsubscribe = true;
+              window.clearTimeout(timer);
               const row = ctx.db.fileBlob.id.find(file.id);
               if (!row) {
                 reject(new Error('文件内容不存在。'));
                 return;
               }
-              resolve(new Uint8Array(row.content));
+              resolve([new Uint8Array(row.content)]);
             })
-            .onError(() => reject(new Error('读取文件内容失败。')))
+            .onError(() => fail('读取文件内容失败。'))
             .subscribe([tables.fileBlob.where((row) => row.id.eq(file.id))]);
         });
 
-        const blob = new Blob([bytes], { type: file.mimeType || 'application/octet-stream' });
+        const blob = new Blob(parts, { type: file.mimeType || 'application/octet-stream' });
         const url = URL.createObjectURL(blob);
         const anchor = document.createElement('a');
         anchor.href = url;
@@ -239,7 +323,7 @@ function App() {
         </nav>
         <div className="storage-card">
           <div className="storage-heading"><span>已用空间</span><span>{formatBytes(totalSize)}</span></div>
-          <span className="storage-caption">共 {files.length} 个文件</span>
+          <span className="storage-caption">共 {readyFiles.length} 个文件</span>
         </div>
         <div className="sidebar-footer"><span className={`status-dot ${isActive ? 'online' : ''}`} />{isActive ? '已连接' : '连接中...'}</div>
       </aside>
@@ -272,11 +356,37 @@ function App() {
             <div className="heading-actions">
               <label className={`upload-button ${isUploading ? 'loading' : ''}`}>
                 <Upload size={17} />
-                <span>{isUploading ? '上传中...' : '上传文件'}</span>
+                <span>{isUploading ? `上传中${uploadProgress ? ` ${uploadProgress.percent}%` : '...'}` : '上传文件'}</span>
                 <input ref={inputRef} type="file" multiple disabled={isUploading} onChange={(event) => void uploadFiles(event.target.files ?? [])} />
               </label>
             </div>
           </section>
+
+          {uploadProgress && (
+            <section className="upload-progress-card" aria-live="polite">
+              <div className="upload-progress-heading">
+                <div>
+                  <span className="upload-progress-kicker">正在上传 {uploadProgress.fileIndex}/{uploadProgress.fileCount}</span>
+                  <strong title={uploadProgress.fileName}>{uploadProgress.fileName}</strong>
+                </div>
+                <span className="upload-progress-percent">{uploadProgress.percent}%</span>
+              </div>
+              <div
+                className="upload-progress-track"
+                role="progressbar"
+                aria-label={`上传 ${uploadProgress.fileName}`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={uploadProgress.percent}
+              >
+                <span style={{ width: `${uploadProgress.percent}%` }} />
+              </div>
+              <div className="upload-progress-meta">
+                <span>当前文件 {formatBytes(uploadProgress.fileUploadedBytes)} / {formatBytes(uploadProgress.fileSizeBytes)}</span>
+                <span>总计 {formatBytes(uploadProgress.totalUploadedBytes)} / {formatBytes(uploadProgress.totalSizeBytes)}</span>
+              </div>
+            </section>
+          )}
 
           {notice && (
             <div className={`notice ${notice.type}`} role="status">
@@ -292,7 +402,7 @@ function App() {
 
           <section className="file-panel">
             <div className="toolbar">
-              <div className="toolbar-title"><span>全部文件</span><span className="count-pill">{files.length}</span></div>
+              <div className="toolbar-title"><span>全部文件</span><span className="count-pill">{readyFiles.length}</span></div>
               <label className="search-box">
                 <Search size={16} />
                 <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索文件" aria-label="搜索文件" />

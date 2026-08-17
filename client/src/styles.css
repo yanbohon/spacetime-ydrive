@@ -52,6 +52,15 @@ h1 { margin: 0; color: #172033; font-size: clamp(28px, 3vw, 39px); letter-spacin
 .notice.error { color: #b43f49; border-color: #f2c9ce; background: #fff5f5; }
 .notice span { flex: 1; }
 .notice button { display: grid; place-items: center; padding: 0; border: 0; color: inherit; background: transparent; }
+.upload-progress-card { margin: -9px 0 20px; padding: 14px 16px; border: 1px solid #d7e4fb; border-radius: 8px; background: #f7faff; box-shadow: 0 5px 18px rgba(37,99,235,.06); }
+.upload-progress-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.upload-progress-heading > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.upload-progress-kicker { color: #6e7f99; font-size: 10px; font-weight: 700; letter-spacing: .06em; }
+.upload-progress-heading strong { overflow: hidden; color: #26364e; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.upload-progress-percent { flex: 0 0 auto; color: #2563eb; font-size: 14px; font-weight: 700; }
+.upload-progress-track { height: 7px; margin-top: 12px; overflow: hidden; border-radius: 999px; background: #dfe9f8; }
+.upload-progress-track span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #3b82f6, #2563eb); transition: width .18s ease-out; }
+.upload-progress-meta { display: flex; justify-content: space-between; gap: 18px; margin-top: 8px; color: #8491a5; font-size: 10px; }
 .drop-zone { height: 0; display: flex; align-items: center; justify-content: center; gap: 8px; overflow: hidden; opacity: 0; border: 1px dashed #8eb2f6; border-radius: 7px; color: #2563eb; background: #f3f7ff; font-size: 12px; transition: height .2s, opacity .2s, margin .2s; }
 .drop-zone.dragging { height: 52px; margin: -10px 0 18px; opacity: 1; }
 .file-panel { border: 1px solid #e5eaf1; border-radius: 9px; background: #fff; box-shadow: 0 7px 25px rgba(41, 58, 86, .035); }
@@ -97,6 +106,7 @@ tbody tr:hover { background: #fbfcfe; }
   .topbar { height: 62px; padding: 0 18px; } .breadcrumb span { display: none; } .breadcrumb .breadcrumb-slash { display: inline; }
   .content-wrap { padding: 34px 15px 24px; } .page-heading { align-items: flex-start; flex-direction: column; margin-bottom: 21px; }
   .heading-actions { width: 100%; } .upload-button { justify-content: center; width: 100%; }
+  .upload-progress-meta { align-items: flex-start; flex-direction: column; gap: 3px; }
   .toolbar { align-items: stretch; flex-direction: column; gap: 12px; padding: 15px; } .search-box { width: 100%; }
   .table-wrap { overflow-x: auto; } table { min-width: 600px; }
   .grid-view { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); padding: 13px; }

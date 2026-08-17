@@ -4,9 +4,10 @@
 
 ## 已实现
 
-- 多文件选择和拖拽上传
+- 多文件选择和拖拽上传，按 1MB 分块写入数据库
+- 显示当前文件、批次、百分比与已确认字节数；连接异常时自动超时退出
 - 实时文件列表、搜索、列表/网格视图
-- 浏览器原生文件下载
+- 分块内容按序组装为浏览器原生下载，并兼容旧版整块文件
 - 文件删除
 - 元数据实时同步，文件二进制内容仅在下载时按需读取
 - 响应式桌面和移动端界面
@@ -14,7 +15,7 @@
 
 ## 运行前端
 
-需要 Node.js 20+ 和 npm。应用默认连接 Maincloud 上的 `ydrive-axerq`，无需启动本地数据库。
+需要 Node.js 22+ 和 npm。应用默认连接 Maincloud 上的 `ydrive-axerq`，无需启动本地数据库。
 
 ```bash
 npm install
@@ -39,6 +40,7 @@ npm run dev:db:maincloud      # 生成绑定、发布并监听服务端变更
 
 ```bash
 npm run generate   # 从服务端 schema 重新生成 TypeScript 客户端绑定
+npm test           # 运行上传分块与超时回归测试
 npm run typecheck  # 检查前后端 TypeScript
 npm run build      # 构建 SpacetimeDB 模块和生产前端
 npm run publish:db:maincloud # 发布到 Maincloud 的 ydrive-axerq
@@ -65,4 +67,4 @@ VITE_SPACETIMEDB_MODULE=ydrive-axerq
 
 ## MVP 边界
 
-这个版本没有鉴权和文件所有权隔离，任何连接者都能查看、下载和删除全部文件。元数据会实时同步，二进制内容在下载时按文件 ID 读取；如果后续面向生产，应增加认证/权限、分块上传、配额归属，以及对象存储或分片表设计。
+这个版本没有鉴权和文件所有权隔离，任何连接者都能查看、下载和删除全部文件。元数据会实时同步，二进制内容在下载时按文件 ID 读取；如果后续面向生产，应增加认证/权限、配额归属、断点续传、恶意文件扫描，以及对象存储策略。

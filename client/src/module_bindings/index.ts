@@ -34,13 +34,17 @@ import {
 } from "spacetimedb";
 
 // Import all reducer arg schemas
+import CancelUploadReducer from "./cancel_upload_reducer";
 import DeleteFileReducer from "./delete_file_reducer";
-import UploadFileReducer from "./upload_file_reducer";
+import FinishUploadReducer from "./finish_upload_reducer";
+import StartUploadReducer from "./start_upload_reducer";
+import UploadChunkReducer from "./upload_chunk_reducer";
 
 // Import all procedure arg schemas
 
 // Import all table schema definitions
 import FileBlobRow from "./file_blob_table";
+import FileChunkRow from "./file_chunk_table";
 import StoredFileRow from "./stored_file_table";
 
 /** Type-only namespace exports for generated type groups. */
@@ -58,6 +62,20 @@ const tablesSchema = __schema({
       { name: 'file_blob_id_key', constraint: 'unique', columns: ['id'] },
     ],
   }, FileBlobRow),
+  fileChunk: __table({
+    name: 'file_chunk',
+    indexes: [
+      { accessor: 'file_id', name: 'file_chunk_file_id_idx_btree', algorithm: 'btree', columns: [
+        'fileId',
+      ] },
+      { accessor: 'id', name: 'file_chunk_id_idx_btree', algorithm: 'btree', columns: [
+        'id',
+      ] },
+    ],
+    constraints: [
+      { name: 'file_chunk_id_key', constraint: 'unique', columns: ['id'] },
+    ],
+  }, FileChunkRow),
   storedFile: __table({
     name: 'stored_file',
     indexes: [
@@ -73,8 +91,11 @@ const tablesSchema = __schema({
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
 const reducersSchema = __reducers(
+  __reducerSchema("cancel_upload", CancelUploadReducer),
   __reducerSchema("delete_file", DeleteFileReducer),
-  __reducerSchema("upload_file", UploadFileReducer),
+  __reducerSchema("finish_upload", FinishUploadReducer),
+  __reducerSchema("start_upload", StartUploadReducer),
+  __reducerSchema("upload_chunk", UploadChunkReducer),
 );
 
 /** The schema information for all procedures in this module. This is defined the same way as the procedures would have been defined in the server. */

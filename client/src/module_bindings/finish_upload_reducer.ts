@@ -10,12 +10,6 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export default __t.row({
-  id: __t.u64().primaryKey(),
-  name: __t.string(),
-  mimeType: __t.string().name("mime_type"),
-  sizeBytes: __t.u64().name("size_bytes"),
-  createdAt: __t.timestamp().name("created_at"),
-  ready: __t.bool(),
-  chunkCount: __t.u32().name("chunk_count"),
-});
+export default {
+  uploadToken: __t.string(),
+};

@@ -6,9 +6,15 @@
 import { type Infer as __Infer } from "spacetimedb";
 
 // Import all reducer arg schemas
+import CancelUploadReducer from "../cancel_upload_reducer";
 import DeleteFileReducer from "../delete_file_reducer";
-import UploadFileReducer from "../upload_file_reducer";
+import FinishUploadReducer from "../finish_upload_reducer";
+import StartUploadReducer from "../start_upload_reducer";
+import UploadChunkReducer from "../upload_chunk_reducer";
 
+export type CancelUploadParams = __Infer<typeof CancelUploadReducer>;
 export type DeleteFileParams = __Infer<typeof DeleteFileReducer>;
-export type UploadFileParams = __Infer<typeof UploadFileReducer>;
+export type FinishUploadParams = __Infer<typeof FinishUploadReducer>;
+export type StartUploadParams = __Infer<typeof StartUploadReducer>;
+export type UploadChunkParams = __Infer<typeof UploadChunkReducer>;
 
