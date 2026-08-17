@@ -8,14 +8,12 @@
     "client"
   ],
   "scripts": {
-    "dev": "concurrently -k \"npm run dev:db\" \"npm run dev:client\"",
-    "dev:db": "npm run generate && spacetime dev ydrive --yes --server http://127.0.0.1:3111 --server-only --skip-generate",
+    "dev": "npm run dev:client",
+    "dev:db:maincloud": "npm run generate && spacetime dev ydrive-axerq --yes --server maincloud --server-only --skip-generate",
     "dev:client": "npm --workspace client run dev",
     "build": "npm --workspace server run build && npm --workspace client run build",
     "typecheck": "npm --workspace server run typecheck && npm --workspace client run typecheck",
-    "generate": "spacetime generate --lang typescript --module-path ./server --out-dir ./client/src/module_bindings"
-  },
-  "devDependencies": {
-    "concurrently": "^9.1.2"
+    "generate": "spacetime generate --lang typescript --module-path ./server --out-dir ./client/src/module_bindings",
+    "publish:db:maincloud": "spacetime publish ydrive-axerq --server maincloud --yes"
   }
 }

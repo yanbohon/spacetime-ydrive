@@ -12,27 +12,28 @@
 - 响应式桌面和移动端界面
 - 无账号认证；所有访问者共享同一个公开空间
 
-## 本地运行
+## 运行前端
 
-需要 Node.js 20+、npm 和 [SpacetimeDB CLI](https://spacetimedb.com/install)。当前项目使用 SpacetimeDB 2.8。
+需要 Node.js 20+ 和 npm。应用默认连接 Maincloud 上的 `ydrive-axerq`，无需启动本地数据库。
 
 ```bash
 npm install
-```
-
-启动本地 SpacetimeDB（终端一）：
-
-```bash
-spacetime start --listen-addr 127.0.0.1:3111
-```
-
-启动模块开发模式和前端（终端二）：
-
-```bash
 npm run dev
 ```
 
-`spacetime dev` 会把数据库发布为 `ydrive`、监听服务端变更并重新生成 `client/src/module_bindings`。浏览器打开 <http://localhost:5173> 即可。
+浏览器打开 <http://localhost:5173> 即可。
+
+## 修改后端
+
+后端开发需要 [SpacetimeDB CLI](https://spacetimedb.com/install) 2.8，并登录有权管理 `ydrive-axerq` 的账号：
+
+```bash
+spacetime login
+npm run publish:db:maincloud  # 构建并发布一次
+npm run dev:db:maincloud      # 生成绑定、发布并监听服务端变更
+```
+
+这两个命令会直接更新 Maincloud 上的模块；普通前端开发使用 `npm run dev`，不会触发线上发布。
 
 ## 常用命令
 
@@ -40,13 +41,14 @@ npm run dev
 npm run generate   # 从服务端 schema 重新生成 TypeScript 客户端绑定
 npm run typecheck  # 检查前后端 TypeScript
 npm run build      # 构建 SpacetimeDB 模块和生产前端
+npm run publish:db:maincloud # 发布到 Maincloud 的 ydrive-axerq
 ```
 
 默认连接地址在 `client/src/config.ts`。部署到其他环境时可复制 `client/.env.example` 为 `client/.env`，修改：
 
 ```dotenv
 VITE_SPACETIMEDB_URI=wss://maincloud.spacetimedb.com
-VITE_SPACETIMEDB_MODULE=你的数据库名称
+VITE_SPACETIMEDB_MODULE=ydrive-axerq
 ```
 
 ## 项目结构
