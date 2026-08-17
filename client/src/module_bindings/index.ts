@@ -65,8 +65,9 @@ const tablesSchema = __schema({
   fileChunk: __table({
     name: 'file_chunk',
     indexes: [
-      { accessor: 'file_id', name: 'file_chunk_file_id_idx_btree', algorithm: 'btree', columns: [
+      { accessor: 'by_file_chunk', name: 'file_chunk_file_id_chunk_index_idx_btree', algorithm: 'btree', columns: [
         'fileId',
+        'chunkIndex',
       ] },
       { accessor: 'id', name: 'file_chunk_id_idx_btree', algorithm: 'btree', columns: [
         'id',

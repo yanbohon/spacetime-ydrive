@@ -22,20 +22,13 @@ import {
 import { useSpacetimeDB, useTable } from 'spacetimedb/react';
 import { DbConnection, tables, type SubscriptionHandle } from './module_bindings';
 import type { StoredFile } from './module_bindings/types';
-import { UploadTimeoutError, uploadFileInChunks } from './upload';
+import {
+  uploadFilesConcurrently,
+  type BatchUploadProgress,
+} from './upload';
 
 type ViewMode = 'list' | 'grid';
 type Notice = { type: 'error' | 'success'; message: string } | null;
-type UploadProgress = {
-  fileName: string;
-  fileIndex: number;
-  fileCount: number;
-  fileUploadedBytes: number;
-  fileSizeBytes: number;
-  totalUploadedBytes: number;
-  totalSizeBytes: number;
-  percent: number;
-};
 
 function formatBytes(size: number | bigint) {
   const value = typeof size === 'bigint' ? Number(size) : size;
@@ -72,6 +65,12 @@ function getFileIcon(mimeType: string) {
   return File;
 }
 
+function formatActiveUploadNames(progress: BatchUploadProgress) {
+  if (!progress.activeFileNames.length) return progress.latestProgressFileName;
+  if (progress.activeFileNames.length <= 2) return progress.activeFileNames.join('、');
+  return `${progress.activeFileNames.slice(0, 2).join('、')} 等 ${progress.activeFileNames.length} 个文件`;
+}
+
 function App() {
   const { isActive, getConnection } = useSpacetimeDB();
   const connection = getConnection() as DbConnection | null;
@@ -79,7 +78,7 @@ function App() {
   const [search, setSearch] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<BatchUploadProgress | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
   const [dragActive, setDragActive] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -143,48 +142,17 @@ function App() {
       uploadInFlightRef.current = true;
       setIsUploading(true);
       showNotice(null);
-      let uploadedCount = 0;
-      const failedFiles: Array<{ name: string; reason: string }> = [];
-      const totalSizeBytes = filesToUpload.reduce((sum, file) => sum + file.size, 0);
-      let completedBytes = 0;
       try {
-        for (const [index, file] of filesToUpload.entries()) {
-          const updateProgress = (fileUploadedBytes: number) => {
-            const totalUploadedBytes = completedBytes + fileUploadedBytes;
-            const percent = totalSizeBytes === 0
-              ? Math.round(((index + (fileUploadedBytes === file.size ? 1 : 0)) / filesToUpload.length) * 100)
-              : Math.round((totalUploadedBytes / totalSizeBytes) * 100);
-            setUploadProgress({
-              fileName: file.name,
-              fileIndex: index + 1,
-              fileCount: filesToUpload.length,
-              fileUploadedBytes,
-              fileSizeBytes: file.size,
-              totalUploadedBytes,
-              totalSizeBytes,
-              percent,
-            });
-          };
-
-          try {
-            await uploadFileInChunks({
-              file,
-              reducers: connection.reducers,
-              onProgress: updateProgress,
-            });
-            completedBytes += file.size;
-            uploadedCount += 1;
-          } catch (error) {
-            const reason = error instanceof Error ? error.message : '未知错误';
-            failedFiles.push({ name: file.name, reason });
-            if (error instanceof UploadTimeoutError) {
-              for (const remainingFile of filesToUpload.slice(index + 1)) {
-                failedFiles.push({ name: remainingFile.name, reason: '上传连接已中断' });
-              }
-              break;
-            }
-          }
-        }
+        const result = await uploadFilesConcurrently({
+          files: filesToUpload,
+          reducers: connection.reducers,
+          onProgress: setUploadProgress,
+        });
+        const uploadedCount = result.uploadedFiles.length;
+        const failedFiles = result.failedFiles.map(({ file, error }) => ({
+          name: file.name,
+          reason: error instanceof Error ? error.message : '未知错误',
+        }));
 
         if (failedFiles.length) {
           const uploadedText = uploadedCount ? `已上传 ${uploadedCount} 个；` : '';
@@ -199,6 +167,11 @@ function App() {
             message: filesToUpload.length === 1 ? '文件已上传。' : `已上传 ${filesToUpload.length} 个文件。`,
           });
         }
+      } catch (error) {
+        showNotice({
+          type: 'error',
+          message: error instanceof Error ? error.message : '上传失败，请重试。',
+        });
       } finally {
         uploadInFlightRef.current = false;
         setIsUploading(false);
@@ -366,15 +339,19 @@ function App() {
             <section className="upload-progress-card" aria-live="polite">
               <div className="upload-progress-heading">
                 <div>
-                  <span className="upload-progress-kicker">正在上传 {uploadProgress.fileIndex}/{uploadProgress.fileCount}</span>
-                  <strong title={uploadProgress.fileName}>{uploadProgress.fileName}</strong>
+                  <span className="upload-progress-kicker">
+                    并发上传 {uploadProgress.activeFiles} 个 · 已完成 {uploadProgress.completedFiles}/{uploadProgress.fileCount}
+                  </span>
+                  <strong title={uploadProgress.activeFileNames.join('、')}>
+                    {formatActiveUploadNames(uploadProgress)}
+                  </strong>
                 </div>
                 <span className="upload-progress-percent">{uploadProgress.percent}%</span>
               </div>
               <div
                 className="upload-progress-track"
                 role="progressbar"
-                aria-label={`上传 ${uploadProgress.fileName}`}
+                aria-label="批量上传总进度"
                 aria-valuemin={0}
                 aria-valuemax={100}
                 aria-valuenow={uploadProgress.percent}
@@ -382,7 +359,9 @@ function App() {
                 <span style={{ width: `${uploadProgress.percent}%` }} />
               </div>
               <div className="upload-progress-meta">
-                <span>当前文件 {formatBytes(uploadProgress.fileUploadedBytes)} / {formatBytes(uploadProgress.fileSizeBytes)}</span>
+                <span>
+                  最近进度 {uploadProgress.latestProgressFileName} · {formatBytes(uploadProgress.latestProgressUploadedBytes)} / {formatBytes(uploadProgress.latestProgressFileSizeBytes)}
+                </span>
                 <span>总计 {formatBytes(uploadProgress.totalUploadedBytes)} / {formatBytes(uploadProgress.totalSizeBytes)}</span>
               </div>
             </section>

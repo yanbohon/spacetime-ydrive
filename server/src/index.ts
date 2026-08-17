@@ -32,10 +32,20 @@ const fileBlob = table(
 );
 
 const fileChunk = table(
-  { name: 'file_chunk', public: true },
+  {
+    name: 'file_chunk',
+    public: true,
+    indexes: [
+      {
+        accessor: 'by_file_chunk',
+        algorithm: 'btree',
+        columns: ['file_id', 'chunk_index'],
+      },
+    ],
+  },
   {
     id: t.u64().primaryKey().autoInc(),
-    file_id: t.u64().index('btree'),
+    file_id: t.u64(),
     chunk_index: t.u32(),
     content: t.byteArray(),
   }
@@ -46,6 +56,7 @@ const uploadSession = table(
   {
     upload_token: t.string().primaryKey(),
     file_id: t.u64().unique(),
+    // Kept for migration compatibility; parallel uploads use this as the accepted chunk count.
     next_chunk_index: t.u32(),
     received_bytes: t.u64(),
     created_at: t.timestamp(),
@@ -58,7 +69,7 @@ export default spacetimedb;
 type Ctx = ReducerCtx<InferSchema<typeof spacetimedb>>;
 
 function deleteChunks(ctx: Ctx, fileId: bigint) {
-  const chunks = [...ctx.db.fileChunk.file_id.filter(fileId)];
+  const chunks = [...ctx.db.fileChunk.by_file_chunk.filter(fileId)];
   for (const chunk of chunks) {
     ctx.db.fileChunk.id.delete(chunk.id);
   }
@@ -134,14 +145,15 @@ export const uploadChunk = spacetimedb.reducer(
     if (!file || file.ready) {
       throw new SenderError('Upload session is no longer active.');
     }
-    if (chunk_index !== session.next_chunk_index) {
-      throw new SenderError('File chunks must be uploaded in order.');
-    }
     if (chunk_index >= file.chunk_count) {
       throw new SenderError('Unexpected file chunk.');
     }
+    if ([...ctx.db.fileChunk.by_file_chunk.filter([file.id, chunk_index])].length) {
+      throw new SenderError('File chunk has already been uploaded.');
+    }
 
-    const remainingBytes = file.size_bytes - session.received_bytes;
+    const chunkOffset = BigInt(chunk_index) * BigInt(FILE_CHUNK_SIZE);
+    const remainingBytes = file.size_bytes - chunkOffset;
     const expectedBytes = Number(
       remainingBytes > BigInt(FILE_CHUNK_SIZE)
         ? BigInt(FILE_CHUNK_SIZE)
@@ -157,9 +169,10 @@ export const uploadChunk = spacetimedb.reducer(
       chunk_index,
       content,
     });
+    const receivedChunkCount = session.next_chunk_index + 1;
     ctx.db.uploadSession.upload_token.update({
       ...session,
-      next_chunk_index: session.next_chunk_index + 1,
+      next_chunk_index: receivedChunkCount,
       received_bytes: session.received_bytes + BigInt(content.byteLength),
     });
   }
@@ -176,9 +189,10 @@ export const finishUpload = spacetimedb.reducer(
     if (!file || file.ready) {
       throw new SenderError('Upload session is no longer active.');
     }
+    const receivedChunkCount = session.next_chunk_index;
     if (
       session.received_bytes !== file.size_bytes ||
-      session.next_chunk_index !== file.chunk_count
+      receivedChunkCount !== file.chunk_count
     ) {
       throw new SenderError('Upload is incomplete.');
     }
