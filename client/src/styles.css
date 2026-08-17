@@ -117,7 +117,7 @@ button:disabled { cursor: not-allowed; }
 .hero-copy > p:last-child { max-width: 430px; margin: 25px 0 0; color: #596a82; font-size: 15px; line-height: 1.7; text-wrap: pretty; }
 
 .transfer-card {
-  min-height: 510px;
+  height: 510px;
   overflow: hidden;
   border: 1px solid rgba(213, 220, 231, .9);
   border-radius: 20px;
@@ -142,7 +142,7 @@ button:disabled { cursor: not-allowed; }
   transition: color .18s, background .18s, box-shadow .18s;
 }
 .mode-tabs button.active { color: #2868df; background: #fff; box-shadow: 0 3px 12px rgba(46, 71, 111, .08); }
-
+.mode-pane { height: 440px; overflow: auto; }
 .pane-content { position: relative; min-height: 440px; padding: 28px 34px 30px; }
 .send-pane { display: flex; flex-direction: column; }
 .send-pane.is-dragging::after {
@@ -353,9 +353,9 @@ button:disabled { cursor: not-allowed; }
   .quick-main { gap: 25px; padding: 25px 16px max(32px, env(safe-area-inset-bottom)); }
   .hero-copy h1 { font-size: clamp(32px, 10vw, 40px); }
   .hero-copy > p:last-child { margin-top: 17px; font-size: 14px; line-height: 1.65; }
-  .transfer-card { min-height: 0; border-radius: 16px; }
+  .transfer-card { height: 510px; min-height: 0; border-radius: 16px; }
+  .mode-pane { height: 451px; overflow: auto; }
   .mode-tabs { padding: 5px; }
-  .mode-tabs button { min-height: 48px; font-size: 13px; }
   .pane-content { min-height: 0; padding: 24px 18px; }
   .upload-drop { min-height: 290px; }
   .selection-heading { gap: 10px; }
