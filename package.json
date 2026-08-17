@@ -1,0 +1,21 @@
+{
+  "name": "spacetime-ydrive",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A minimal, shared cloud drive powered by SpacetimeDB.",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -k \"npm run dev:db\" \"npm run dev:client\"",
+    "dev:db": "npm run generate && spacetime dev ydrive --yes --server http://127.0.0.1:3111 --server-only --skip-generate",
+    "dev:client": "npm --workspace client run dev",
+    "build": "npm --workspace server run build && npm --workspace client run build",
+    "typecheck": "npm --workspace server run typecheck && npm --workspace client run typecheck",
+    "generate": "spacetime generate --lang typescript --module-path ./server --out-dir ./client/src/module_bindings"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
