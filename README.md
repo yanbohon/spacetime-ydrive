@@ -31,6 +31,12 @@ VITE_SPACETIMEDB_HTTP_URI=https://maincloud.spacetimedb.com
 VITE_SPACETIMEDB_MODULE=ydrive-axerq
 ```
 
+## 部署到 Vercel
+
+导入 GitHub 仓库后，将项目的 **Root Directory** 设置为 `client`。仓库中的 `client/vercel.json` 会使用 `npm run build` 构建，并从 `client/dist` 发布静态文件。不要在 Vercel 中使用根工作区命令 `npm --workspace client run build`。
+
+在 Vercel 的 Production、Preview 和 Development 环境中配置上述三个 `VITE_*` 变量，然后重新部署。
+
 ## 修改和发布后端
 
 后端开发需要 [SpacetimeDB CLI](https://spacetimedb.com/install) 2.8：
