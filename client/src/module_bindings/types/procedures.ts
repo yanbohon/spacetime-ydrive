@@ -7,10 +7,16 @@ import { type Infer as __Infer } from "spacetimedb";
 
 // Import all procedure arg schemas
 import * as CreateTransferProcedure from "../create_transfer_procedure";
+import * as GetUploadStatusProcedure from "../get_upload_status_procedure";
+import * as ListOwnedTransfersProcedure from "../list_owned_transfers_procedure";
 import * as ReceiveTransferProcedure from "../receive_transfer_procedure";
 
 export type CreateTransferArgs = __Infer<typeof CreateTransferProcedure.params>;
 export type CreateTransferResult = __Infer<typeof CreateTransferProcedure.returnType>;
+export type GetUploadStatusArgs = __Infer<typeof GetUploadStatusProcedure.params>;
+export type GetUploadStatusResult = __Infer<typeof GetUploadStatusProcedure.returnType>;
+export type ListOwnedTransfersArgs = __Infer<typeof ListOwnedTransfersProcedure.params>;
+export type ListOwnedTransfersResult = __Infer<typeof ListOwnedTransfersProcedure.returnType>;
 export type ReceiveTransferArgs = __Infer<typeof ReceiveTransferProcedure.params>;
 export type ReceiveTransferResult = __Infer<typeof ReceiveTransferProcedure.returnType>;
 

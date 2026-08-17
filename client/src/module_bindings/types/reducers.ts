@@ -11,6 +11,7 @@ import DeleteTransferReducer from "../delete_transfer_reducer";
 import FinishUploadReducer from "../finish_upload_reducer";
 import SealTransferReducer from "../seal_transfer_reducer";
 import StartUploadV2Reducer from "../start_upload_v_2_reducer";
+import UpdateTransferExpiryReducer from "../update_transfer_expiry_reducer";
 import UploadChunkReducer from "../upload_chunk_reducer";
 import UploadFileReducer from "../upload_file_reducer";
 
@@ -19,6 +20,7 @@ export type DeleteTransferParams = __Infer<typeof DeleteTransferReducer>;
 export type FinishUploadParams = __Infer<typeof FinishUploadReducer>;
 export type SealTransferParams = __Infer<typeof SealTransferReducer>;
 export type StartUploadV2Params = __Infer<typeof StartUploadV2Reducer>;
+export type UpdateTransferExpiryParams = __Infer<typeof UpdateTransferExpiryReducer>;
 export type UploadChunkParams = __Infer<typeof UploadChunkReducer>;
 export type UploadFileParams = __Infer<typeof UploadFileReducer>;
 

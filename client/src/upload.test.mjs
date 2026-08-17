@@ -126,9 +126,8 @@ test('uploads a file no larger than one chunk with one binary write', async () =
   assert.deepEqual(progress, [0, file.size]);
 });
 
-test('cancels a timed-out direct upload by its upload token', async () => {
+test('preserves a timed-out direct upload so it can be resumed', async () => {
   const file = makeFile(1024, 'small-timeout.bin');
-  let cancelledToken = '';
 
   await assert.rejects(
     uploadFileInChunks({
@@ -136,20 +135,17 @@ test('cancels a timed-out direct upload by its upload token', async () => {
       file,
       uploadToken: 'small-timeout-token',
       timeoutMs: 10,
+      retryAttempts: 1,
       reducers: {
         uploadFile: async () => new Promise(() => {}),
         startUploadV2: async () => assert.fail('direct uploads must not create a chunk session'),
         uploadChunk: async () => assert.fail('direct uploads must not send chunks'),
         finishUpload: async () => assert.fail('a timed-out direct upload must not finish'),
-        cancelUpload: async ({ uploadToken }) => {
-          cancelledToken = uploadToken;
-        },
+        cancelUpload: async () => assert.fail('a timed-out upload must remain resumable'),
       },
     }),
     /上传文件超时/
   );
-
-  assert.equal(cancelledToken, 'small-timeout-token');
 });
 
 test('uploads a large file as bounded chunks and reports committed bytes', async () => {
@@ -224,6 +220,82 @@ test('keeps multiple chunks in flight for the same file', async () => {
   });
 
   assert.equal(maxInFlight, 3);
+});
+test('retries a transient chunk failure with the same chunk index', async () => {
+  const file = makeFile(FILE_CHUNK_SIZE + 1, 'retry.bin');
+  const chunkIndexes = [];
+
+  await uploadFileInChunks({
+    transferId: 1n,
+    file,
+    uploadToken: 'retry-token',
+    retryDelayMs: 1,
+    reducers: {
+      startUploadV2: async () => {},
+      uploadChunk: async ({ chunkIndex }) => {
+        chunkIndexes.push(chunkIndex);
+        if (chunkIndex === 0 && chunkIndexes.length === 1) throw new Error('temporary disconnect');
+      },
+      finishUpload: async () => {},
+      cancelUpload: async () => assert.fail('a successful retry must not cancel the upload'),
+    },
+  });
+
+  assert.deepEqual(chunkIndexes, [0, 1, 0]);
+});
+test('does not retry deterministic sender errors', async () => {
+  const file = makeFile(1024, 'invalid.bin');
+  let uploadCalls = 0;
+  let cancelCalls = 0;
+
+  await assert.rejects(
+    uploadFileInChunks({
+      transferId: 1n,
+      file,
+      retryDelayMs: 1,
+      reducers: {
+        uploadFile: async () => {
+          uploadCalls += 1;
+          throw new Error('SenderError: Invalid upload token.');
+        },
+        startUploadV2: async () => assert.fail('direct uploads must not create a chunk session'),
+        uploadChunk: async () => assert.fail('direct uploads must not upload chunks'),
+        finishUpload: async () => assert.fail('a rejected upload must not finish'),
+        cancelUpload: async () => { cancelCalls += 1; },
+      },
+    }),
+    /Invalid upload token/
+  );
+
+  assert.equal(uploadCalls, 1);
+  assert.equal(cancelCalls, 1);
+});
+
+test('resumes by skipping chunks already confirmed by the server', async () => {
+  const file = makeFile(FILE_CHUNK_SIZE * 3, 'resume.bin');
+  const uploadedChunkIndexes = [];
+  const progress = [];
+
+  await uploadFileInChunks({
+    transferId: 1n,
+    file,
+    resumeState: {
+      uploadToken: 'resume-token',
+      ready: false,
+      receivedBytes: FILE_CHUNK_SIZE * 2,
+      uploadedChunkIndexes: [0, 2],
+    },
+    reducers: {
+      startUploadV2: async ({ uploadToken }) => assert.equal(uploadToken, 'resume-token'),
+      uploadChunk: async ({ chunkIndex }) => uploadedChunkIndexes.push(chunkIndex),
+      finishUpload: async () => {},
+      cancelUpload: async () => assert.fail('a resumed upload must not be cancelled'),
+    },
+    onProgress: (uploadedBytes) => progress.push(uploadedBytes),
+  });
+
+  assert.deepEqual(uploadedChunkIndexes, [1]);
+  assert.deepEqual(progress, [FILE_CHUNK_SIZE * 2, FILE_CHUNK_SIZE * 3]);
 });
 
 test('uploads multiple files concurrently while respecting the global chunk limit', async () => {
@@ -302,6 +374,7 @@ test('a batch timeout aborts queued chunks instead of starting more timeout wave
       maxInFlightBytes: DEFAULT_MAX_IN_FLIGHT_BYTES,
     },
     timeoutMs: 20,
+    retryAttempts: 1,
     reducers: {
       startUploadV2: async () => {},
       uploadChunk: async () => {
@@ -318,15 +391,14 @@ test('a batch timeout aborts queued chunks instead of starting more timeout wave
   });
 
   assert.equal(uploadChunkCalls, 2);
-  assert.equal(cancelCalls, 3);
+  assert.equal(cancelCalls, 0);
   assert.equal(result.uploadedFiles.length, 0);
   assert.equal(result.failedFiles.length, 3);
   assert.ok(result.failedFiles.every(({ error }) => error instanceof Error));
 });
 
-test('rejects and cancels when a reducer promise never settles', async () => {
+test('preserves a chunk upload when its reducer promise never settles', async () => {
   const file = makeFile(FILE_CHUNK_SIZE + 1, 'disconnected.bin');
-  let cancelled = false;
 
   await assert.rejects(
     uploadFileInChunks({
@@ -334,19 +406,16 @@ test('rejects and cancels when a reducer promise never settles', async () => {
       file,
       uploadToken: 'disconnect-test',
       timeoutMs: 10,
+      retryAttempts: 1,
       reducers: {
         startUploadV2: async () => {},
         uploadChunk: async () => new Promise(() => {}),
         finishUpload: async () => {
           assert.fail('a timed-out upload must not finish');
         },
-        cancelUpload: async () => {
-          cancelled = true;
-        },
+        cancelUpload: async () => assert.fail('a timed-out upload must remain resumable'),
       },
     }),
     /上传分块超时/
   );
-
-  assert.equal(cancelled, true);
 });

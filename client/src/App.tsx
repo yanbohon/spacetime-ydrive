@@ -17,9 +17,11 @@ import {
   FileText,
   FileVideo,
   Eye,
+  History,
   Link2,
   Plus,
   Send,
+  RefreshCw,
   Trash2,
   Upload,
   X,
@@ -28,17 +30,15 @@ import {
 import { useSpacetimeDB } from 'spacetimedb/react';
 import { DbConnection } from './module_bindings';
 import type {
-  CreatedTransferResult,
+  OwnedTransferResult,
   TransferFileResult,
   TransferResult,
 } from './module_bindings/types';
-import { getDownloadUrl, getPreviewUrl } from './config';
-import {
-  uploadFilesConcurrently,
-  type BatchUploadProgress,
-} from './upload';
+import { getBatchDownloadUrl, getDownloadUrl, getPreviewUrl } from './config';
+import { type BatchUploadProgress } from './upload';
+import { matchDraftFiles, useUploadTransfer } from './useUploadTransfer';
 
-type Mode = 'send' | 'receive';
+type Mode = 'send' | 'receive' | 'manage';
 type Notice = { type: 'error' | 'success'; message: string } | null;
 
 function formatBytes(size: number | bigint) {
@@ -134,6 +134,9 @@ function App() {
             <button type="button" role="tab" aria-selected={mode === 'receive'} className={mode === 'receive' ? 'active' : ''} onClick={() => setMode('receive')}>
               <ArrowDownToLine size={17} /> 我要接收
             </button>
+            <button type="button" role="tab" aria-selected={mode === 'manage'} className={mode === 'manage' ? 'active' : ''} onClick={() => setMode('manage')}>
+              <History size={17} /> 我的快传
+            </button>
           </div>
           <div className="mode-pane" hidden={mode !== 'send'}>
             <SendPane connection={connection} isActive={isActive} />
@@ -141,6 +144,9 @@ function App() {
           <div className="mode-pane" hidden={mode !== 'receive'}>
             <ReceivePane connection={connection} isActive={isActive} initialCode={initialCode} />
           </div>
+          {mode === 'manage' && <div className="mode-pane">
+            <ManagePane connection={connection} isActive={isActive} />
+          </div>}
         </section>
 
         <div className="trust-row" aria-label="快传特性">
@@ -162,77 +168,55 @@ type PaneProps = {
 function SendPane({ connection, isActive }: PaneProps) {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [expiryHours, setExpiryHours] = useState(24);
-  const [progress, setProgress] = useState<BatchUploadProgress | null>(null);
-  const [notice, setNotice] = useState<Notice>(null);
-  const [receipt, setReceipt] = useState<CreatedTransferResult | null>(null);
-  const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
-  const [isUploading, setIsUploading] = useState(false);
+  const [viewNotice, setViewNotice] = useState<Notice>(null);
   const [dragActive, setDragActive] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-
+  const upload = useUploadTransfer(connection, isActive);
+  const { state } = upload;
+  const uploadDraft = 'draft' in state ? state.draft : null;
+  const isBusy = state.phase === 'uploading' || state.phase === 'pausing' || state.phase === 'cancelling';
+  const progress = isBusy ? state.progress : null;
+  const receipt = state.phase === 'sealed' ? state.receipt : null;
+  const uploadedFiles = state.phase === 'sealed' ? state.uploadedFiles : [];
+  const failedFileNames = new Set(state.phase === 'failed' ? state.failedFileNames : []);
+  const notice = viewNotice ?? state.notice;
   const totalSize = selectedFiles.reduce((sum, file) => sum + file.size, 0);
+
+  const dismissNotice = () => {
+    if (viewNotice) setViewNotice(null);
+    else upload.dismissNotice();
+  };
 
   const addFiles = useCallback((files: FileList | File[]) => {
     const additions = Array.from(files);
     if (!additions.length) return;
-    setSelectedFiles((current) => [...current, ...additions]);
-    setNotice(null);
+    if (uploadDraft) {
+      const matched = matchDraftFiles(additions, uploadDraft);
+      if (!matched) {
+        setViewNotice({ type: 'error', message: '所选文件与待恢复上传不一致，请选择原来的完整文件集。' });
+        return;
+      }
+      setSelectedFiles(matched);
+      setViewNotice({ type: 'success', message: '文件已匹配，可以继续未完成的上传。' });
+    } else {
+      setSelectedFiles((current) => [...current, ...additions]);
+      setViewNotice(null);
+    }
     if (inputRef.current) inputRef.current.value = '';
-  }, []);
+  }, [uploadDraft]);
 
-  const startTransfer = async () => {
-    if (!connection || !isActive) {
-      setNotice({ type: 'error', message: '服务尚未连接，请稍后重试。' });
-      return;
-    }
-    if (!selectedFiles.length || isUploading) return;
-
-    setIsUploading(true);
-    setNotice(null);
-    let created: CreatedTransferResult | null = null;
-    try {
-      created = await connection.procedures.createTransfer({ expiresInHours: expiryHours });
-      const result = await uploadFilesConcurrently({
-        transferId: created.transferId,
-        files: selectedFiles,
-        reducers: connection.reducers,
-        onProgress: setProgress,
-      });
-      if (!result.uploadedFiles.length) {
-        await connection.reducers.deleteTransfer({ transferId: created.transferId });
-        const firstFailure = result.failedFiles[0]?.error;
-        throw firstFailure ?? new Error('没有文件上传成功。');
-      }
-
-      await connection.reducers.sealTransfer({ transferId: created.transferId });
-      setReceipt(created);
-      setUploadedFiles(result.uploadedFiles as File[]);
-      setSelectedFiles([]);
-      if (result.failedFiles.length) {
-        setNotice({
-          type: 'error',
-          message: `${result.uploadedFiles.length} 个文件已发送，${result.failedFiles.length} 个上传失败。`,
-        });
-      }
-    } catch (error) {
-      if (created) {
-        await connection.reducers.deleteTransfer({ transferId: created.transferId }).catch(() => undefined);
-      }
-      setNotice({ type: 'error', message: errorMessage(error, '发送失败，请重试。') });
-    } finally {
-      setIsUploading(false);
-      setProgress(null);
-    }
-  };
+  useEffect(() => {
+    if (state.phase === 'sealed') setSelectedFiles([]);
+  }, [state.phase]);
 
   if (receipt) {
     const shareUrl = getShareUrl(receipt.pickupCode);
     const copy = async (text: string, message: string) => {
       try {
         await navigator.clipboard.writeText(text);
-        setNotice({ type: 'success', message });
+        setViewNotice({ type: 'success', message });
       } catch {
-        setNotice({ type: 'error', message: '复制失败，请手动选择复制。' });
+        setViewNotice({ type: 'error', message: '复制失败，请手动选择复制。' });
       }
     };
     return (
@@ -250,10 +234,10 @@ function SendPane({ connection, isActive }: PaneProps) {
         <button className="primary-action" type="button" onClick={() => void copy(shareUrl, '快传链接已复制。')}>
           <Link2 size={17} /> 复制快传链接
         </button>
-        <button className="text-action" type="button" onClick={() => { setReceipt(null); setUploadedFiles([]); setNotice(null); }}>
+        <button className="text-action" type="button" onClick={() => { upload.reset(); setViewNotice(null); }}>
           <Plus size={15} /> 再发一批文件
         </button>
-        <NoticeView notice={notice} onClose={() => setNotice(null)} />
+        <NoticeView notice={notice} onClose={dismissNotice} />
       </div>
     );
   }
@@ -275,15 +259,15 @@ function SendPane({ connection, isActive }: PaneProps) {
       {selectedFiles.length === 0 ? (
         <label className="upload-drop">
           <span className="upload-illustration"><Upload size={26} /></span>
-          <strong>拖入文件，或点击选择</strong>
-          <span>支持多文件和大文件分块上传</span>
+          <strong>{uploadDraft ? '选择原文件继续上传' : '拖入文件，或点击选择'}</strong>
+          <span>{uploadDraft ? `${uploadDraft.files.length} 个文件等待恢复` : '支持多文件和大文件分块上传'}</span>
           <input ref={inputRef} type="file" multiple onChange={(event) => addFiles(event.target.files ?? [])} />
         </label>
       ) : (
         <>
           <div className="selection-heading">
-            <div><strong>待发送文件</strong><span>{selectedFiles.length} 个 · {formatBytes(totalSize)}</span></div>
-            <label className="add-file-button"><Plus size={15} /> 添加<input ref={inputRef} type="file" multiple disabled={isUploading} onChange={(event) => addFiles(event.target.files ?? [])} /></label>
+            <div><strong>{uploadDraft ? '待恢复文件' : '待发送文件'}</strong><span>{selectedFiles.length} 个 · {formatBytes(totalSize)}</span></div>
+            {!uploadDraft && <label className="add-file-button"><Plus size={15} /> 添加<input ref={inputRef} type="file" multiple disabled={isBusy} onChange={(event) => addFiles(event.target.files ?? [])} /></label>}
           </div>
           <div className="selected-files">
             {selectedFiles.map((file, index) => {
@@ -291,8 +275,8 @@ function SendPane({ connection, isActive }: PaneProps) {
               return (
                 <div className="selected-file" key={`${file.name}-${file.lastModified}-${index}`}>
                   <span className="file-icon"><Icon size={18} /></span>
-                  <span className="selected-file-name"><strong title={file.name}>{file.name}</strong><small>{formatBytes(file.size)}</small></span>
-                  <button type="button" disabled={isUploading} aria-label={`移除 ${file.name}`} onClick={() => setSelectedFiles((files) => files.filter((_, fileIndex) => fileIndex !== index))}><Trash2 size={16} /></button>
+                  <span className="selected-file-name"><strong title={file.name}>{file.name}</strong><small>{formatBytes(file.size)}{failedFileNames.has(file.name) ? ' · 上传失败' : ''}</small></span>
+                  <button type="button" disabled={isBusy || Boolean(uploadDraft)} aria-label={`移除 ${file.name}`} onClick={() => setSelectedFiles((files) => files.filter((_, fileIndex) => fileIndex !== index))}><Trash2 size={16} /></button>
                 </div>
               );
             })}
@@ -300,18 +284,117 @@ function SendPane({ connection, isActive }: PaneProps) {
           {progress && <UploadProgress progress={progress} />}
           <div className="send-options">
             <label><Clock3 size={15} /> 有效期</label>
-            <select value={expiryHours} disabled={isUploading} onChange={(event) => setExpiryHours(Number(event.target.value))}>
+            <select value={uploadDraft?.expiryHours ?? expiryHours} disabled={isBusy || Boolean(uploadDraft)} onChange={(event) => setExpiryHours(Number(event.target.value))}>
               <option value={24}>24 小时</option>
               <option value={72}>3 天</option>
               <option value={168}>7 天</option>
               <option value={0}>永久有效</option>
             </select>
           </div>
-          <button className="primary-action" type="button" disabled={isUploading || !isActive} onClick={() => void startTransfer()}>
-            {isUploading ? <><span className="button-spinner" /> 正在上传 {progress?.percent ?? 0}%</> : <><Send size={17} /> 生成取件码</>}
+          <button
+            className="primary-action"
+            type="button"
+            disabled={(!isActive && state.phase !== 'uploading') || state.phase === 'pausing' || state.phase === 'cancelling' || state.phase === 'delete_failed'}
+            onClick={() => state.phase === 'uploading' ? upload.pause() : void upload.start(selectedFiles, uploadDraft?.expiryHours ?? expiryHours)}
+          >
+            {state.phase === 'uploading'
+              ? <><X size={17} /> 暂停上传 {progress?.percent ?? 0}%</>
+              : state.phase === 'pausing'
+                ? <>正在暂停</>
+                : state.phase === 'cancelling'
+                  ? <>正在取消</>
+                  : state.phase === 'delete_failed'
+                    ? <>删除失败，请重试删除</>
+                    : <><Send size={17} /> {uploadDraft ? '继续上传' : '生成取件码'}</>}
           </button>
+          {(state.phase === 'uploading' || state.phase === 'pausing') && <button className="text-action" type="button" onClick={upload.cancel}><Trash2 size={15} /> 取消并删除本次上传</button>}
+          {uploadDraft && !isBusy && <button className="text-action" type="button" onClick={async () => { if (await upload.abandon()) setSelectedFiles([]); }}><Trash2 size={15} /> {state.phase === 'delete_failed' ? '重试删除未完成上传' : '放弃未完成上传'}</button>}
         </>
       )}
+      <NoticeView notice={notice} onClose={dismissNotice} />
+    </div>
+  );
+}
+
+function ManagePane({ connection, isActive }: PaneProps) {
+  const [transfers, setTransfers] = useState<OwnedTransferResult[]>([]);
+  const [notice, setNotice] = useState<Notice>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const loadTransfers = useCallback(async () => {
+    if (!connection || !isActive) return;
+    setIsLoading(true);
+    setNotice(null);
+    try {
+      setTransfers(await connection.procedures.listOwnedTransfers({}));
+    } catch (error) {
+      setNotice({ type: 'error', message: errorMessage(error, '读取快传记录失败。') });
+    } finally {
+      setIsLoading(false);
+    }
+  }, [connection, isActive]);
+
+  useEffect(() => {
+    void loadTransfers();
+  }, [loadTransfers]);
+
+  const copyLink = async (pickupCode: string) => {
+    try {
+      await navigator.clipboard.writeText(getShareUrl(pickupCode));
+      setNotice({ type: 'success', message: '快传链接已复制。' });
+    } catch {
+      setNotice({ type: 'error', message: '复制失败。' });
+    }
+  };
+
+  const deleteOwnedTransfer = async (transferId: bigint) => {
+    if (!connection) return;
+    try {
+      await connection.reducers.deleteTransfer({ transferId });
+      setTransfers((current) => current.filter((item) => item.transferId !== transferId));
+      setNotice({ type: 'success', message: '快传已删除。' });
+    } catch (error) {
+      setNotice({ type: 'error', message: errorMessage(error, '删除失败。') });
+    }
+  };
+
+  const updateExpiry = async (transferId: bigint, expiresInHours: number) => {
+    if (!connection) return;
+    try {
+      await connection.reducers.updateTransferExpiry({ transferId, expiresInHours });
+      await loadTransfers();
+      setNotice({ type: 'success', message: '有效期已更新。' });
+    } catch (error) {
+      setNotice({ type: 'error', message: errorMessage(error, '修改有效期失败。') });
+    }
+  };
+
+  return (
+    <div className="pane-content manage-pane">
+      <div className="manage-heading">
+        <div><p className="pane-kicker">当前浏览器身份</p><h2>我的快传</h2></div>
+        <button type="button" aria-label="刷新快传记录" onClick={() => void loadTransfers()} disabled={!isActive || isLoading}><RefreshCw size={17} /></button>
+      </div>
+      {!transfers.length && !isLoading ? (
+        <div className="manage-empty"><History size={28} /><strong>还没有快传记录</strong><span>发送成功或暂停中的快传会显示在这里。</span></div>
+      ) : (
+        <div className="manage-list">
+          {transfers.map((item) => (
+            <div className="manage-item" key={String(item.transferId)}>
+              <div className="manage-item-copy">
+                <strong>{formatPickupCode(item.pickupCode)}</strong>
+                <span>{item.sealed ? `${item.fileCount} 个文件 · ${formatBytes(item.totalSizeBytes)}` : '上传未完成'} · {formatExpiry(item.expiresAtMicros)}</span>
+              </div>
+              <div className="manage-actions">
+                {item.sealed && <button type="button" title="复制链接" aria-label={`复制快传 ${formatPickupCode(item.pickupCode)} 的链接`} onClick={() => void copyLink(item.pickupCode)}><Copy size={16} /></button>}
+                {item.sealed && <select aria-label={`修改快传 ${formatPickupCode(item.pickupCode)} 的有效期`} defaultValue="" onChange={(event) => { if (event.target.value) void updateExpiry(item.transferId, Number(event.target.value)); event.target.value = ''; }}><option value="" disabled>有效期</option><option value="24">24 小时</option><option value="72">3 天</option><option value="168">7 天</option><option value="0">永久</option></select>}
+                <button type="button" title="删除" aria-label={`删除快传 ${formatPickupCode(item.pickupCode)}`} onClick={() => void deleteOwnedTransfer(item.transferId)}><Trash2 size={16} /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {isLoading && <div className="manage-loading"><span className="button-spinner" /> 正在读取</div>}
       <NoticeView notice={notice} onClose={() => setNotice(null)} />
     </div>
   );
@@ -325,6 +408,7 @@ function ReceivePane({ connection, isActive, initialCode }: ReceivePaneProps) {
   const [notice, setNotice] = useState<Notice>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [previewFile, setPreviewFile] = useState<TransferFileResult | null>(null);
+  const [selectedFileIds, setSelectedFileIds] = useState<Set<bigint>>(new Set());
   const autoReceivedRef = useRef(false);
 
   const receive = useCallback(async () => {
@@ -338,6 +422,7 @@ function ReceivePane({ connection, isActive, initialCode }: ReceivePaneProps) {
     try {
       const result = await connection.procedures.receiveTransfer({ pickupCode });
       setTransfer(result);
+      setSelectedFileIds(new Set(result.files.map((file) => file.id)));
       setPickupCode(formatPickupCode(result.pickupCode));
       window.history.replaceState(null, '', getShareUrl(result.pickupCode));
     } catch (error) {
@@ -354,6 +439,18 @@ function ReceivePane({ connection, isActive, initialCode }: ReceivePaneProps) {
     void receive();
   }, [initialCode, isActive, receive]);
 
+  const downloadSelected = () => {
+    if (!transfer) return;
+    const selectedFiles = transfer.files.filter((file) => selectedFileIds.has(file.id));
+    if (!selectedFiles.length) return;
+    const anchor = document.createElement('a');
+    anchor.href = getBatchDownloadUrl(selectedFiles.map((file) => file.id), transfer.pickupCode);
+    anchor.download = `YDrive-${transfer.pickupCode}.zip`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setNotice({ type: 'success', message: `正在打包下载 ${selectedFiles.length} 个文件。` });
+  };
   if (transfer) {
     return (
       <div className="pane-content received-pane">
@@ -364,12 +461,23 @@ function ReceivePane({ connection, isActive, initialCode }: ReceivePaneProps) {
           </div>
           <span><Clock3 size={13} /> {formatExpiry(transfer.expiresAtMicros)}</span>
         </div>
+        <div className="batch-actions">
+          <label><input type="checkbox" checked={selectedFileIds.size === transfer.files.length} onChange={(event) => setSelectedFileIds(event.target.checked ? new Set(transfer.files.map((file) => file.id)) : new Set())} /> 全选</label>
+          <button type="button" disabled={!selectedFileIds.size} onClick={downloadSelected}><Download size={15} /> 下载已选（{selectedFileIds.size}）</button>
+        </div>
         <div className="received-files">
           {transfer.files.map((file) => (
             <ReceivedFile
               key={String(file.id)}
               file={file}
               pickupCode={transfer.pickupCode}
+              selected={selectedFileIds.has(file.id)}
+              onToggle={(selected) => setSelectedFileIds((current) => {
+                const next = new Set(current);
+                if (selected) next.add(file.id);
+                else next.delete(file.id);
+                return next;
+              })}
               onCopy={async (downloadUrl) => {
                 try {
                   await navigator.clipboard.writeText(downloadUrl);
@@ -390,7 +498,7 @@ function ReceivePane({ connection, isActive, initialCode }: ReceivePaneProps) {
           />
         )}
         <NoticeView notice={notice} onClose={() => setNotice(null)} />
-        <button className="text-action receive-again-button" type="button" onClick={() => { setTransfer(null); setPreviewFile(null); setPickupCode(''); setNotice(null); window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); }}>
+        <button className="text-action receive-again-button" type="button" onClick={() => { setTransfer(null); setPreviewFile(null); setSelectedFileIds(new Set()); setPickupCode(''); setNotice(null); window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); }}>
           领取另一批文件
         </button>
       </div>
@@ -427,16 +535,19 @@ function ReceivePane({ connection, isActive, initialCode }: ReceivePaneProps) {
 type ReceivedFileProps = {
   file: TransferFileResult;
   pickupCode: string;
+  selected: boolean;
+  onToggle: (selected: boolean) => void;
   onCopy: (downloadUrl: string) => void | Promise<void>;
   onPreview: (file: TransferFileResult) => void;
 };
 
-function ReceivedFile({ file, pickupCode, onCopy, onPreview }: ReceivedFileProps) {
+function ReceivedFile({ file, pickupCode, selected, onToggle, onCopy, onPreview }: ReceivedFileProps) {
   const Icon = getFileIcon(file.mimeType);
   const downloadUrl = getDownloadUrl(file.id, pickupCode);
   const canPreview = /^(image|audio|video)\//i.test(file.mimeType);
   return (
     <div className="received-file">
+      <input className="received-select" type="checkbox" checked={selected} aria-label={`选择 ${file.name}`} onChange={(event) => onToggle(event.target.checked)} />
       <span className="file-icon"><Icon size={19} /></span>
       <span><strong title={file.name}>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></span>
       <div className="received-actions">

@@ -31,6 +31,17 @@ export const FileChunk = __t.object("FileChunk", {
 });
 export type FileChunk = __Infer<typeof FileChunk>;
 
+export const OwnedTransferResult = __t.object("OwnedTransferResult", {
+  transferId: __t.u64(),
+  pickupCode: __t.string(),
+  createdAt: __t.timestamp(),
+  expiresAtMicros: __t.u64(),
+  sealed: __t.bool(),
+  fileCount: __t.u32(),
+  totalSizeBytes: __t.u64(),
+});
+export type OwnedTransferResult = __Infer<typeof OwnedTransferResult>;
+
 export const StoredFile = __t.object("StoredFile", {
   id: __t.u64(),
   transferId: __t.u64(),
@@ -73,6 +84,12 @@ export const TransferResult = __t.object("TransferResult", {
 });
 export type TransferResult = __Infer<typeof TransferResult>;
 
+export const UploadLease = __t.object("UploadLease", {
+  transferId: __t.u64(),
+  expiresAtMicros: __t.u64(),
+});
+export type UploadLease = __Infer<typeof UploadLease>;
+
 export const UploadSession = __t.object("UploadSession", {
   uploadToken: __t.string(),
   fileId: __t.u64(),
@@ -83,4 +100,16 @@ export const UploadSession = __t.object("UploadSession", {
   ownerIdentity: __t.string(),
 });
 export type UploadSession = __Infer<typeof UploadSession>;
+
+export const UploadStatusResult = __t.object("UploadStatusResult", {
+  transferId: __t.u64(),
+  name: __t.string(),
+  mimeType: __t.string(),
+  sizeBytes: __t.u64(),
+  chunkSizeBytes: __t.u32(),
+  receivedBytes: __t.u64(),
+  ready: __t.bool(),
+  uploadedChunkIndexes: __t.array(__t.u32()),
+});
+export type UploadStatusResult = __Infer<typeof UploadStatusResult>;
 

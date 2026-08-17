@@ -18,3 +18,10 @@ export function getDownloadUrl(fileId: bigint, pickupCode: string) {
 export function getPreviewUrl(fileId: bigint, pickupCode: string) {
   return getFileUrl(fileId, pickupCode, true);
 }
+
+export function getBatchDownloadUrl(fileIds: bigint[], pickupCode: string) {
+  const baseUri = SPACETIMEDB_HTTP_URI.replace(/\/$/, '');
+  const code = pickupCode.replace(/[\s-]/g, '').toUpperCase();
+  const ids = fileIds.map(String).join(',');
+  return `${baseUri}/v1/database/${encodeURIComponent(MODULE_NAME)}/route/download-batch?code=${encodeURIComponent(code)}&ids=${encodeURIComponent(ids)}`;
+}

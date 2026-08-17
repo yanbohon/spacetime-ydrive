@@ -39,11 +39,14 @@ import DeleteTransferReducer from "./delete_transfer_reducer";
 import FinishUploadReducer from "./finish_upload_reducer";
 import SealTransferReducer from "./seal_transfer_reducer";
 import StartUploadV2Reducer from "./start_upload_v_2_reducer";
+import UpdateTransferExpiryReducer from "./update_transfer_expiry_reducer";
 import UploadChunkReducer from "./upload_chunk_reducer";
 import UploadFileReducer from "./upload_file_reducer";
 
 // Import all procedure arg schemas
 import * as CreateTransferProcedure from "./create_transfer_procedure";
+import * as GetUploadStatusProcedure from "./get_upload_status_procedure";
+import * as ListOwnedTransfersProcedure from "./list_owned_transfers_procedure";
 import * as ReceiveTransferProcedure from "./receive_transfer_procedure";
 
 // Import all table schema definitions
@@ -61,6 +64,7 @@ const reducersSchema = __reducers(
   __reducerSchema("finish_upload", FinishUploadReducer),
   __reducerSchema("seal_transfer", SealTransferReducer),
   __reducerSchema("start_upload_v_2", StartUploadV2Reducer),
+  __reducerSchema("update_transfer_expiry", UpdateTransferExpiryReducer),
   __reducerSchema("upload_chunk", UploadChunkReducer),
   __reducerSchema("upload_file", UploadFileReducer),
 );
@@ -68,6 +72,8 @@ const reducersSchema = __reducers(
 /** The schema information for all procedures in this module. This is defined the same way as the procedures would have been defined in the server. */
 const proceduresSchema = __procedures(
   __procedureSchema("create_transfer", CreateTransferProcedure.params, CreateTransferProcedure.returnType),
+  __procedureSchema("get_upload_status", GetUploadStatusProcedure.params, GetUploadStatusProcedure.returnType),
+  __procedureSchema("list_owned_transfers", ListOwnedTransfersProcedure.params, ListOwnedTransfersProcedure.returnType),
   __procedureSchema("receive_transfer", ReceiveTransferProcedure.params, ReceiveTransferProcedure.returnType),
 );
 
