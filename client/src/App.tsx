@@ -153,7 +153,7 @@ function App() {
               <ArrowDownToLine size={17} aria-hidden="true" /> 我要接收
             </button>
             <button id="manage-tab" ref={(node) => { tabRefs.current.manage = node; }} type="button" role="tab" aria-controls="manage-panel" aria-selected={mode === 'manage'} tabIndex={mode === 'manage' ? 0 : -1} className={mode === 'manage' ? 'active' : ''} onClick={() => setMode('manage')} onKeyDown={(event) => handleTabKeyDown(event, 'manage')}>
-              <History size={17} aria-hidden="true" /> 我的快传
+              <History size={17} aria-hidden="true" /> 发送历史
             </button>
           </div>
           <div id="send-panel" className="mode-pane" role="tabpanel" aria-labelledby="send-tab" hidden={mode !== 'send'}>
@@ -379,26 +379,13 @@ function ManagePane({ connection, isActive }: PaneProps) {
     }
   };
 
-  const updateExpiry = async (transferId: bigint, expiresInHours: number) => {
-    if (!connection) return;
-    try {
-      await connection.reducers.updateTransferExpiry({ transferId, expiresInHours });
-      await loadTransfers();
-      setNotice({ type: 'success', message: '有效期已更新。' });
-    } catch (error) {
-      setNotice({ type: 'error', message: errorMessage(error, '修改有效期失败。') });
-    }
-  };
-
   return (
     <div className="pane-content manage-pane">
       <div className="manage-heading">
-        <div><p className="pane-kicker">当前浏览器身份</p><h2>我的快传</h2></div>
+        <div><p className="pane-kicker">当前浏览器身份</p><h2>发送历史</h2></div>
         <button type="button" aria-label="刷新快传记录" onClick={() => void loadTransfers()} disabled={!isActive || isLoading}><RefreshCw size={17} /></button>
       </div>
-      {!transfers.length && !isLoading ? (
-        <div className="manage-empty"><History size={28} /><strong>还没有快传记录</strong><span>发送成功或暂停中的快传会显示在这里。</span></div>
-      ) : (
+      {transfers.length ? (
         <div className="manage-list">
           {transfers.map((item) => (
             <div className="manage-item" key={String(item.transferId)}>
@@ -408,14 +395,15 @@ function ManagePane({ connection, isActive }: PaneProps) {
               </div>
               <div className="manage-actions">
                 {item.sealed && <button type="button" title="复制链接" aria-label={`复制快传 ${formatPickupCode(item.pickupCode)} 的链接`} onClick={() => void copyLink(item.pickupCode)}><Copy size={16} /></button>}
-                {item.sealed && <select aria-label={`修改快传 ${formatPickupCode(item.pickupCode)} 的有效期`} defaultValue="" onChange={(event) => { if (event.target.value) void updateExpiry(item.transferId, Number(event.target.value)); event.target.value = ''; }}><option value="" disabled>有效期</option><option value="24">24 小时</option><option value="72">3 天</option><option value="168">7 天</option><option value="0">永久</option></select>}
                 <button className="destructive-action" type="button" title="删除" aria-label={`删除快传 ${formatPickupCode(item.pickupCode)}`} onClick={() => void deleteOwnedTransfer(item.transferId, item.pickupCode)}><Trash2 size={16} /></button>
               </div>
             </div>
           ))}
         </div>
-      )}
-      {isLoading && <div className="manage-loading"><span className="button-spinner" /> 正在读取</div>}
+      ) : !isLoading ? (
+        <div className="manage-empty"><History size={28} /><strong>还没有快传记录</strong><span>发送成功或暂停中的快传会显示在这里。</span></div>
+      ) : null}
+      {isLoading && <div className="manage-loading" role="status" aria-label="正在读取发送历史"><span className="button-spinner" /></div>}
       <NoticeView notice={notice} onClose={() => setNotice(null)} />
     </div>
   );
@@ -528,10 +516,6 @@ function ReceivePane({ connection, isActive, initialCode }: ReceivePaneProps) {
 
   return (
     <div className="pane-content receive-pane">
-      <span className="receive-illustration"><ArrowDownToLine size={27} /></span>
-      <p className="pane-kicker">接收文件</p>
-      <h2>输入 16 位取件码</h2>
-      <p className="pane-description">取件码仅用于本次快传，不需要账号或密码。</p>
       <label className="code-input">
         <span>取件码</span>
         <input

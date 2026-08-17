@@ -176,7 +176,7 @@ button:disabled { cursor: not-allowed; }
 .upload-drop strong { margin-top: 18px; color: #34435a; font-size: 16px; }
 .upload-drop > span:nth-of-type(2) { margin-top: 8px; font-size: 13px; }
 .upload-select-button { min-height: 42px; display: inline-flex; align-items: center; justify-content: center; margin-top: 22px; padding: 0 20px; border: 1px solid #c6d7ef; border-radius: 10px; color: #245fc9; background: #fff; box-shadow: 0 4px 12px rgba(39, 93, 184, .08); font-size: 14px; font-weight: 700; transition: color .15s, background .15s, transform .15s, box-shadow .15s; }
-.upload-illustration, .receive-illustration {
+.upload-illustration {
   width: 64px;
   height: 64px;
   display: grid;
@@ -261,15 +261,13 @@ button:disabled { cursor: not-allowed; }
 .receipt-pane .primary-action { max-width: 290px; }
 .receipt-pane .notice { width: 100%; }
 
-.receive-illustration { margin-bottom: 19px; }
-.pane-description { margin: 10px 0 24px; color: #5f6f84; font-size: 13px; line-height: 1.5; text-wrap: pretty; }
 .code-input { width: 100%; margin-bottom: 14px; text-align: left; }
 .code-input span { display: block; margin: 0 0 7px 2px; color: #526279; font-size: 13px; font-weight: 600; }
 .code-input input { width: 100%; height: 55px; padding: 0 16px; outline: 0; border: 1px solid #d8e0eb; border-radius: 11px; color: #2f64bf; background: #fbfcfe; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 20px; font-weight: 700; letter-spacing: .07em; text-align: center; text-transform: uppercase; }
 .code-input input:focus { border-color: #6d9bf0; box-shadow: 0 0 0 4px #edf4ff; }
 .code-input input::placeholder { color: #c4ccd8; }
 
-.received-pane { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; text-align: left; }
+.received-pane { height: 100%; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; text-align: left; }
 .receive-again-button { flex: 0 0 auto; margin: auto auto 0; }
 .received-pane > .notice { margin-bottom: 12px; }
 .received-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 15px; margin: 4px 0 18px; }
@@ -301,12 +299,11 @@ button:disabled { cursor: not-allowed; }
 .manage-actions button:hover { color: #245fc9; background: #eaf2ff; }
 .manage-actions button.destructive-action { color: #a43d49; }
 .manage-actions button.destructive-action:hover { color: #8e2633; background: #fff0f1; }
-.manage-actions select { width: 76px; height: 36px; border: 1px solid #cfd9e6; border-radius: 8px; color: #46576e; background: #fff; font-size: 12px; }
 .manage-empty { min-height: 260px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: #96a2b3; text-align: center; }
 .manage-empty strong { color: #536176; font-size: 13px; }
 .manage-empty span { font-size: 11px; }
-.manage-loading { display: flex; align-items: center; justify-content: center; gap: 8px; margin: auto; color: #8794a7; font-size: 11px; }
-.manage-loading .button-spinner { border-color: rgba(52, 121, 239, .25); border-top-color: #3479ef; }
+.manage-loading { display: grid; flex: 1; place-items: center; margin: auto; color: #3479ef; }
+.manage-loading .button-spinner { width: 32px; height: 32px; border-width: 3px; border-color: rgba(52, 121, 239, .22); border-top-color: #3479ef; }
 
 .preview-backdrop { position: fixed; z-index: 1000; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(15, 24, 39, .72); backdrop-filter: blur(8px); }
 .preview-dialog { width: min(1120px, calc(100vw - 48px)); height: min(920px, calc(100dvh - 48px)); display: flex; flex-direction: column; overflow: hidden; border: 1px solid rgba(255,255,255,.16); border-radius: 16px; background: #111827; box-shadow: 0 28px 90px rgba(0,0,0,.38); }
@@ -356,7 +353,7 @@ button:disabled { cursor: not-allowed; }
   .transfer-card { height: 510px; min-height: 0; border-radius: 16px; }
   .mode-pane { height: 451px; overflow: auto; }
   .mode-tabs { padding: 5px; }
-  .pane-content { min-height: 0; padding: 24px 18px; }
+  .pane-content { min-height: 100%; padding: 24px 18px; }
   .upload-drop { min-height: 290px; }
   .selection-heading { gap: 10px; }
   .add-file-button { min-height: 40px; padding: 8px 11px; }
