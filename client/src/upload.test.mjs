@@ -36,7 +36,6 @@ test('uses larger v2 chunks while keeping the default in-flight window bounded',
     timeoutMs: 100,
     reducers: {
       uploadFile: async () => assert.fail('large files must use chunked upload'),
-      startUpload: async () => assert.fail('optimized uploads must use the v2 session'),
       startUploadV2: async ({ chunkSizeBytes }) => {
         advertisedChunkSize = chunkSizeBytes;
       },
@@ -60,10 +59,11 @@ test('uses larger v2 chunks while keeping the default in-flight window bounded',
   assert.ok(maxActiveBytes <= DEFAULT_MAX_IN_FLIGHT_BYTES);
 });
 
-test('uploads a file no larger than one chunk in a single transaction', async () => {
+test('uploads a file no larger than one chunk with one binary write', async () => {
   const file = makeFile(1024 * 1024 + 137, 'small-fast-path.bin');
   const progress = [];
   let uploadedContent;
+  let finalized = false;
 
   await uploadFileInChunks({
     file,
@@ -73,17 +73,44 @@ test('uploads a file no larger than one chunk in a single transaction', async ()
       uploadFile: async ({ content }) => {
         uploadedContent = content;
       },
-      startUpload: async () => assert.fail('the fast path must not create a session'),
       startUploadV2: async () => assert.fail('the fast path must not create a session'),
       uploadChunk: async () => assert.fail('the fast path must not upload a chunk'),
-      finishUpload: async () => assert.fail('the fast path must not finish a session'),
+      finishUpload: async () => {
+        finalized = true;
+      },
       cancelUpload: async () => assert.fail('the fast path must not cancel a session'),
     },
     onProgress: (uploadedBytes) => progress.push(uploadedBytes),
   });
 
   assert.equal(uploadedContent?.byteLength, file.size);
+  assert.equal(finalized, true);
   assert.deepEqual(progress, [0, file.size]);
+});
+
+test('cancels a timed-out direct upload by its upload token', async () => {
+  const file = makeFile(1024, 'small-timeout.bin');
+  let cancelledToken = '';
+
+  await assert.rejects(
+    uploadFileInChunks({
+      file,
+      uploadToken: 'small-timeout-token',
+      timeoutMs: 10,
+      reducers: {
+        uploadFile: async () => new Promise(() => {}),
+        startUploadV2: async () => assert.fail('direct uploads must not create a chunk session'),
+        uploadChunk: async () => assert.fail('direct uploads must not send chunks'),
+        finishUpload: async () => assert.fail('a timed-out direct upload must not finish'),
+        cancelUpload: async ({ uploadToken }) => {
+          cancelledToken = uploadToken;
+        },
+      },
+    }),
+    /上传文件超时/
+  );
+
+  assert.equal(cancelledToken, 'small-timeout-token');
 });
 
 test('uploads a large file as bounded chunks and reports committed bytes', async () => {
@@ -97,7 +124,6 @@ test('uploads a large file as bounded chunks and reports committed bytes', async
     uploadToken: 'large-file-test',
     timeoutMs: 100,
     reducers: {
-      startUpload: async () => {},
       startUploadV2: async () => {},
       uploadChunk: async ({ content }) => {
         chunkSizes.push(content.byteLength);
@@ -137,11 +163,13 @@ test('keeps multiple chunks in flight for the same file', async () => {
   await uploadFileInChunks({
     file,
     uploadToken: 'parallel-test',
-    chunkConcurrency: 3,
-    maxInFlightBytes: FILE_CHUNK_SIZE * 3,
+    transferPolicy: {
+      chunkSizeBytes: FILE_CHUNK_SIZE,
+      chunkConcurrency: 3,
+      maxInFlightBytes: FILE_CHUNK_SIZE * 3,
+    },
     timeoutMs: 100,
     reducers: {
-      startUpload: async () => {},
       startUploadV2: async () => {},
       uploadChunk: async () => {
         inFlight += 1;
@@ -172,15 +200,13 @@ test('uploads multiple files concurrently while respecting the global chunk limi
   const result = await uploadFilesConcurrently({
     files,
     fileConcurrency: 2,
-    chunkConcurrency: 4,
-    maxInFlightBytes: FILE_CHUNK_SIZE * 4,
+    transferPolicy: {
+      chunkSizeBytes: FILE_CHUNK_SIZE,
+      chunkConcurrency: 4,
+      maxInFlightBytes: FILE_CHUNK_SIZE * 4,
+    },
     timeoutMs: 100,
     reducers: {
-      startUpload: async ({ uploadToken }) => {
-        activeSessions.add(uploadToken);
-        maxActiveFiles = Math.max(maxActiveFiles, activeSessions.size);
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      },
       startUploadV2: async ({ uploadToken }) => {
         activeSessions.add(uploadToken);
         maxActiveFiles = Math.max(maxActiveFiles, activeSessions.size);
@@ -227,10 +253,13 @@ test('a batch timeout aborts queued chunks instead of starting more timeout wave
   const result = await uploadFilesConcurrently({
     files,
     fileConcurrency: 3,
-    chunkConcurrency: 3,
+    transferPolicy: {
+      chunkSizeBytes: FILE_CHUNK_SIZE,
+      chunkConcurrency: 3,
+      maxInFlightBytes: DEFAULT_MAX_IN_FLIGHT_BYTES,
+    },
     timeoutMs: 20,
     reducers: {
-      startUpload: async () => {},
       startUploadV2: async () => {},
       uploadChunk: async () => {
         uploadChunkCalls += 1;
@@ -262,7 +291,6 @@ test('rejects and cancels when a reducer promise never settles', async () => {
       uploadToken: 'disconnect-test',
       timeoutMs: 10,
       reducers: {
-        startUpload: async () => {},
         startUploadV2: async () => {},
         uploadChunk: async () => new Promise(() => {}),
         finishUpload: async () => {

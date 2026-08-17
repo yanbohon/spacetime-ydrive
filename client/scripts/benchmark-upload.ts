@@ -89,6 +89,7 @@ function createFixture(sizeBytes: number) {
 async function verifyDownloadedHash(
   connection: DbConnection,
   fileId: bigint,
+  chunkCount: number,
   expectedHash: string
 ): Promise<void> {
   let subscription: SubscriptionHandle | undefined;
@@ -101,11 +102,27 @@ async function verifyDownloadedHash(
       .subscriptionBuilder()
       .onApplied((ctx) => {
         clearTimeout(timer);
-        const chunks = [...ctx.db.fileChunk.iter()]
-          .filter((chunk) => chunk.fileId === fileId)
-          .sort((left, right) => left.chunkIndex - right.chunkIndex);
         const actualHash = createHash('sha256');
-        for (const chunk of chunks) actualHash.update(chunk.content);
+        if (chunkCount > 0) {
+          const chunks = [...ctx.db.fileChunk.iter()]
+            .filter((chunk) => chunk.fileId === fileId)
+            .sort((left, right) => left.chunkIndex - right.chunkIndex);
+          if (
+            chunks.length !== chunkCount ||
+            chunks.some((chunk, index) => chunk.chunkIndex !== index)
+          ) {
+            reject(new Error('Downloaded benchmark chunks are incomplete.'));
+            return;
+          }
+          for (const chunk of chunks) actualHash.update(chunk.content);
+        } else {
+          const blob = ctx.db.fileBlob.id.find(fileId);
+          if (!blob) {
+            reject(new Error('Downloaded benchmark blob is missing.'));
+            return;
+          }
+          actualHash.update(blob.content);
+        }
         if (actualHash.digest('hex') !== expectedHash) {
           reject(new Error('Downloaded benchmark data hash does not match.'));
           return;
@@ -116,7 +133,11 @@ async function verifyDownloadedHash(
         clearTimeout(timer);
         reject(new Error('Failed to download benchmark chunks.'));
       })
-      .subscribe([tables.fileChunk.where((row) => row.fileId.eq(fileId))]);
+      .subscribe([
+        chunkCount > 0
+          ? tables.fileChunk.where((row) => row.fileId.eq(fileId))
+          : tables.fileBlob.where((row) => row.id.eq(fileId)),
+      ]);
   }).finally(() => subscription?.unsubscribe());
 }
 
@@ -147,9 +168,11 @@ async function runProfile(
       file,
       reducers: connection.reducers,
       uploadToken,
-      chunkSizeBytes: profile.chunkSizeBytes,
-      chunkConcurrency: profile.chunkConcurrency,
-      maxInFlightBytes: profile.chunkSizeBytes * profile.chunkConcurrency,
+      transferPolicy: {
+        chunkSizeBytes: profile.chunkSizeBytes,
+        chunkConcurrency: profile.chunkConcurrency,
+        maxInFlightBytes: profile.chunkSizeBytes * profile.chunkConcurrency,
+      },
       timeoutMs: 20_000,
     });
     const durationSeconds = (performance.now() - startedAt) / 1000;
@@ -163,7 +186,12 @@ async function runProfile(
 
     if (verifyHash) {
       const expectedHash = createHash('sha256').update(fixture.bytes).digest('hex');
-      await verifyDownloadedHash(connection, uploadedFile.id, expectedHash);
+      await verifyDownloadedHash(
+        connection,
+        uploadedFile.id,
+        uploadedFile.chunkCount,
+        expectedHash
+      );
     }
 
     const mibPerSecond = file.size / MIB / durationSeconds;

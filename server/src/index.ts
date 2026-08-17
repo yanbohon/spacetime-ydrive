@@ -154,13 +154,15 @@ function startUploadSession(
 
 export const uploadFile = spacetimedb.reducer(
   {
+    upload_token: t.string(),
     name: t.string(),
     mime_type: t.string(),
     size_bytes: t.u64(),
     content: t.byteArray(),
   },
-  (ctx, { name, mime_type, size_bytes, content }) => {
+  (ctx, { upload_token, name, mime_type, size_bytes, content }) => {
     const trimmedName = validateFileName(name);
+    validateUploadToken(ctx, upload_token);
     if (content.byteLength > MAX_FILE_CHUNK_SIZE) {
       throw new SenderError('File is too large for direct upload.');
     }
@@ -174,10 +176,18 @@ export const uploadFile = spacetimedb.reducer(
       mime_type: mime_type || 'application/octet-stream',
       size_bytes,
       created_at: ctx.timestamp,
-      ready: true,
+      ready: false,
       chunk_count: 0,
     });
     ctx.db.fileBlob.insert({ id: file.id, content });
+    ctx.db.uploadSession.insert({
+      upload_token,
+      file_id: file.id,
+      next_chunk_index: 0,
+      received_bytes: size_bytes,
+      created_at: ctx.timestamp,
+      chunk_size_bytes: LEGACY_FILE_CHUNK_SIZE,
+    });
   }
 );
 
@@ -276,7 +286,7 @@ export const finishUpload = spacetimedb.reducer(
       throw new SenderError('Upload session not found.');
     }
     const file = ctx.db.storedFile.id.find(session.file_id);
-    if (!file || file.ready) {
+    if (!file) {
       throw new SenderError('Upload session is no longer active.');
     }
     const receivedChunkCount = session.next_chunk_index;

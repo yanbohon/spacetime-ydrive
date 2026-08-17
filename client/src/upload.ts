@@ -5,6 +5,18 @@ export const DEFAULT_REDUCER_TIMEOUT_MS = 30_000;
 export const DEFAULT_CHUNK_CONCURRENCY = 2;
 export const DEFAULT_FILE_CONCURRENCY = 2;
 
+export type UploadTransferPolicy = {
+  chunkSizeBytes: number;
+  chunkConcurrency: number;
+  maxInFlightBytes: number;
+};
+
+export const DEFAULT_UPLOAD_TRANSFER_POLICY: UploadTransferPolicy = {
+  chunkSizeBytes: DEFAULT_FILE_CHUNK_SIZE,
+  chunkConcurrency: DEFAULT_CHUNK_CONCURRENCY,
+  maxInFlightBytes: DEFAULT_MAX_IN_FLIGHT_BYTES,
+};
+
 export class UploadTimeoutError extends Error {
   constructor(operation: string) {
     super(`${operation}超时，请检查网络后重试。`);
@@ -16,16 +28,11 @@ type UploadFileLike = Pick<File, 'name' | 'type' | 'size' | 'slice'>;
 
 type UploadReducers = {
   uploadFile: (args: {
-    name: string;
-    mimeType: string;
-    sizeBytes: bigint;
-    content: Uint8Array;
-  }) => Promise<unknown>;
-  startUpload: (args: {
     uploadToken: string;
     name: string;
     mimeType: string;
     sizeBytes: bigint;
+    content: Uint8Array;
   }) => Promise<unknown>;
   startUploadV2: (args: {
     uploadToken: string;
@@ -50,9 +57,7 @@ type UploadFileOptions = {
   reducers: UploadReducers;
   uploadToken?: string;
   timeoutMs?: number;
-  chunkSizeBytes?: number;
-  chunkConcurrency?: number;
-  maxInFlightBytes?: number;
+  transferPolicy?: UploadTransferPolicy;
   scheduleChunk?: TaskScheduler;
   signal?: AbortSignal;
   onTimeout?: () => void;
@@ -86,9 +91,7 @@ type UploadBatchOptions = {
   files: UploadFileLike[];
   reducers: UploadReducers;
   timeoutMs?: number;
-  chunkSizeBytes?: number;
-  chunkConcurrency?: number;
-  maxInFlightBytes?: number;
+  transferPolicy?: UploadTransferPolicy;
   fileConcurrency?: number;
   onProgress?: (progress: BatchUploadProgress) => void;
 };
@@ -204,14 +207,13 @@ export async function uploadFileInChunks({
   reducers,
   uploadToken = crypto.randomUUID(),
   timeoutMs = DEFAULT_REDUCER_TIMEOUT_MS,
-  chunkSizeBytes = DEFAULT_FILE_CHUNK_SIZE,
-  chunkConcurrency = DEFAULT_CHUNK_CONCURRENCY,
-  maxInFlightBytes = DEFAULT_MAX_IN_FLIGHT_BYTES,
+  transferPolicy = DEFAULT_UPLOAD_TRANSFER_POLICY,
   scheduleChunk,
   signal,
   onTimeout,
   onProgress,
 }: UploadFileOptions): Promise<void> {
+  const { chunkSizeBytes, chunkConcurrency, maxInFlightBytes } = transferPolicy;
   const normalizedChunkSize = normalizeByteCount(chunkSizeBytes, 'Chunk size');
   const concurrency = resolveChunkConcurrency(
     chunkConcurrency,
@@ -219,16 +221,26 @@ export async function uploadFileInChunks({
     maxInFlightBytes
   );
   const schedule = scheduleChunk ?? createConcurrencyLimiter(concurrency, signal);
+  const finalizeUpload = () =>
+    timedCall(
+      () => reducers.finishUpload({ uploadToken }),
+      timeoutMs,
+      '完成上传',
+      signal,
+      onTimeout
+    );
   let uploadMayExist = false;
   onProgress?.(0);
 
   try {
     if (file.size <= normalizedChunkSize) {
+      uploadMayExist = true;
       const uploadedBytes = await schedule(async () => {
         const content = new Uint8Array(await file.slice(0, file.size).arrayBuffer());
         await timedCall(
           () =>
             reducers.uploadFile({
+              uploadToken,
               name: file.name,
               mimeType: file.type || 'application/octet-stream',
               sizeBytes: BigInt(file.size),
@@ -241,6 +253,7 @@ export async function uploadFileInChunks({
         );
         return content.byteLength;
       });
+      await finalizeUpload();
       onProgress?.(uploadedBytes);
       return;
     }
@@ -302,13 +315,7 @@ export async function uploadFileInChunks({
     await Promise.all(Array.from({ length: workerCount }, uploadNextChunks));
     if (hasError) throw firstError;
 
-    await timedCall(
-      () => reducers.finishUpload({ uploadToken }),
-      timeoutMs,
-      '完成上传',
-      signal,
-      onTimeout
-    );
+    await finalizeUpload();
   } catch (error) {
     if (uploadMayExist) {
       await timedCall(
@@ -325,14 +332,13 @@ export async function uploadFilesConcurrently({
   files,
   reducers,
   timeoutMs = DEFAULT_REDUCER_TIMEOUT_MS,
-  chunkSizeBytes = DEFAULT_FILE_CHUNK_SIZE,
-  chunkConcurrency = DEFAULT_CHUNK_CONCURRENCY,
-  maxInFlightBytes = DEFAULT_MAX_IN_FLIGHT_BYTES,
+  transferPolicy = DEFAULT_UPLOAD_TRANSFER_POLICY,
   fileConcurrency = DEFAULT_FILE_CONCURRENCY,
   onProgress,
 }: UploadBatchOptions): Promise<BatchUploadResult> {
   if (!files.length) return { uploadedFiles: [], failedFiles: [] };
 
+  const { chunkSizeBytes, chunkConcurrency, maxInFlightBytes } = transferPolicy;
   const normalizedChunkSize = normalizeByteCount(chunkSizeBytes, 'Chunk size');
   const chunkLimit = resolveChunkConcurrency(
     chunkConcurrency,
@@ -388,9 +394,11 @@ export async function uploadFilesConcurrently({
           file,
           reducers,
           timeoutMs,
-          chunkSizeBytes: normalizedChunkSize,
-          chunkConcurrency: chunkLimit,
-          maxInFlightBytes,
+          transferPolicy: {
+            chunkSizeBytes: normalizedChunkSize,
+            chunkConcurrency: chunkLimit,
+            maxInFlightBytes,
+          },
           scheduleChunk,
           signal: uploadAbortController.signal,
           onTimeout: () => uploadAbortController.abort(),
