@@ -12,6 +12,7 @@
     "dev:db:maincloud": "npm run generate && spacetime dev ydrive-axerq --yes --server maincloud --server-only --skip-generate",
     "dev:client": "npm --workspace client run dev",
     "build": "npm --workspace server run build && npm --workspace client run build",
+    "benchmark:upload": "npm --workspace client run benchmark:upload --",
     "test": "node --experimental-strip-types --test client/src/*.test.mjs",
     "typecheck": "npm --workspace server run typecheck && npm --workspace client run typecheck",
     "generate": "spacetime generate --lang typescript --module-path ./server --out-dir ./client/src/module_bindings",

@@ -41,6 +41,7 @@ export const UploadSession = __t.object("UploadSession", {
   nextChunkIndex: __t.u32(),
   receivedBytes: __t.u64(),
   createdAt: __t.timestamp(),
+  chunkSizeBytes: __t.u32(),
 });
 export type UploadSession = __Infer<typeof UploadSession>;
 

@@ -4,7 +4,7 @@
 
 ## 已实现
 
-- 多文件选择和拖拽上传，按 1MB 分块写入数据库；最多 3 个文件并行、全局 3 个分块并发
+- 多文件选择和拖拽上传；不超过 4MiB 的文件单事务写入，大文件按 4MiB 分块、全局 2 块并发（最多 8MiB 在途）
 - 显示当前文件、批次、百分比与已确认字节数；连接异常时自动超时退出
 - 实时文件列表、搜索、列表/网格视图
 - 分块内容按序组装为浏览器原生下载，并兼容旧版整块文件
@@ -44,7 +44,11 @@ npm test           # 运行上传分块与超时回归测试
 npm run typecheck  # 检查前后端 TypeScript
 npm run build      # 构建 SpacetimeDB 模块和生产前端
 npm run publish:db:maincloud # 发布到 Maincloud 的 ydrive-axerq
+npm run benchmark:upload -- 1x3 2x2 4x1 4x2 # 对 Maincloud 运行 64MiB 上传基准并自动清理
 ```
+
+基准脚本也支持在最后追加 `--verify`，上传后会重新下载并校验 SHA-256。可以通过
+`YDRIVE_BENCHMARK_SIZE_BYTES` 调整测试文件大小。
 
 默认连接地址在 `client/src/config.ts`。部署到其他环境时可复制 `client/.env.example` 为 `client/.env`，修改：
 

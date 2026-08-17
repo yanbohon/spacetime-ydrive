@@ -1,7 +1,9 @@
-export const FILE_CHUNK_SIZE = 1024 * 1024;
+export const DEFAULT_FILE_CHUNK_SIZE = 4 * 1024 * 1024;
+export const FILE_CHUNK_SIZE = DEFAULT_FILE_CHUNK_SIZE;
+export const DEFAULT_MAX_IN_FLIGHT_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_REDUCER_TIMEOUT_MS = 30_000;
-export const DEFAULT_CHUNK_CONCURRENCY = 3;
-export const DEFAULT_FILE_CONCURRENCY = 3;
+export const DEFAULT_CHUNK_CONCURRENCY = 2;
+export const DEFAULT_FILE_CONCURRENCY = 2;
 
 export class UploadTimeoutError extends Error {
   constructor(operation: string) {
@@ -13,11 +15,24 @@ export class UploadTimeoutError extends Error {
 type UploadFileLike = Pick<File, 'name' | 'type' | 'size' | 'slice'>;
 
 type UploadReducers = {
+  uploadFile: (args: {
+    name: string;
+    mimeType: string;
+    sizeBytes: bigint;
+    content: Uint8Array;
+  }) => Promise<unknown>;
   startUpload: (args: {
     uploadToken: string;
     name: string;
     mimeType: string;
     sizeBytes: bigint;
+  }) => Promise<unknown>;
+  startUploadV2: (args: {
+    uploadToken: string;
+    name: string;
+    mimeType: string;
+    sizeBytes: bigint;
+    chunkSizeBytes: number;
   }) => Promise<unknown>;
   uploadChunk: (args: {
     uploadToken: string;
@@ -35,7 +50,9 @@ type UploadFileOptions = {
   reducers: UploadReducers;
   uploadToken?: string;
   timeoutMs?: number;
+  chunkSizeBytes?: number;
   chunkConcurrency?: number;
+  maxInFlightBytes?: number;
   scheduleChunk?: TaskScheduler;
   signal?: AbortSignal;
   onTimeout?: () => void;
@@ -69,7 +86,9 @@ type UploadBatchOptions = {
   files: UploadFileLike[];
   reducers: UploadReducers;
   timeoutMs?: number;
+  chunkSizeBytes?: number;
   chunkConcurrency?: number;
+  maxInFlightBytes?: number;
   fileConcurrency?: number;
   onProgress?: (progress: BatchUploadProgress) => void;
 };
@@ -79,6 +98,24 @@ function normalizeConcurrency(value: number, label: string): number {
     throw new RangeError(`${label} must be a positive integer.`);
   }
   return value;
+}
+
+function normalizeByteCount(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new RangeError(`${label} must be a positive safe integer.`);
+  }
+  return value;
+}
+
+function resolveChunkConcurrency(
+  requestedConcurrency: number,
+  chunkSizeBytes: number,
+  maxInFlightBytes: number
+): number {
+  const requested = normalizeConcurrency(requestedConcurrency, 'Chunk concurrency');
+  const chunkSize = normalizeByteCount(chunkSizeBytes, 'Chunk size');
+  const maxInFlight = normalizeByteCount(maxInFlightBytes, 'Maximum in-flight bytes');
+  return Math.min(requested, Math.max(1, Math.floor(maxInFlight / chunkSize)));
 }
 
 function createConcurrencyLimiter(
@@ -167,26 +204,56 @@ export async function uploadFileInChunks({
   reducers,
   uploadToken = crypto.randomUUID(),
   timeoutMs = DEFAULT_REDUCER_TIMEOUT_MS,
+  chunkSizeBytes = DEFAULT_FILE_CHUNK_SIZE,
   chunkConcurrency = DEFAULT_CHUNK_CONCURRENCY,
+  maxInFlightBytes = DEFAULT_MAX_IN_FLIGHT_BYTES,
   scheduleChunk,
   signal,
   onTimeout,
   onProgress,
 }: UploadFileOptions): Promise<void> {
-  const concurrency = normalizeConcurrency(chunkConcurrency, 'Chunk concurrency');
+  const normalizedChunkSize = normalizeByteCount(chunkSizeBytes, 'Chunk size');
+  const concurrency = resolveChunkConcurrency(
+    chunkConcurrency,
+    normalizedChunkSize,
+    maxInFlightBytes
+  );
   const schedule = scheduleChunk ?? createConcurrencyLimiter(concurrency, signal);
   let uploadMayExist = false;
   onProgress?.(0);
 
   try {
+    if (file.size <= normalizedChunkSize) {
+      const uploadedBytes = await schedule(async () => {
+        const content = new Uint8Array(await file.slice(0, file.size).arrayBuffer());
+        await timedCall(
+          () =>
+            reducers.uploadFile({
+              name: file.name,
+              mimeType: file.type || 'application/octet-stream',
+              sizeBytes: BigInt(file.size),
+              content,
+            }),
+          timeoutMs,
+          '上传文件',
+          signal,
+          onTimeout
+        );
+        return content.byteLength;
+      });
+      onProgress?.(uploadedBytes);
+      return;
+    }
+
     uploadMayExist = true;
     await timedCall(
       () =>
-        reducers.startUpload({
+        reducers.startUploadV2({
           uploadToken,
           name: file.name,
           mimeType: file.type || 'application/octet-stream',
           sizeBytes: BigInt(file.size),
+          chunkSizeBytes: normalizedChunkSize,
         }),
       timeoutMs,
       '创建上传任务',
@@ -194,7 +261,7 @@ export async function uploadFileInChunks({
       onTimeout
     );
 
-    const chunkCount = Math.ceil(file.size / FILE_CHUNK_SIZE);
+    const chunkCount = Math.ceil(file.size / normalizedChunkSize);
     let nextChunkIndex = 0;
     let uploadedBytes = 0;
     let firstError: unknown;
@@ -206,8 +273,8 @@ export async function uploadFileInChunks({
         nextChunkIndex += 1;
         if (chunkIndex >= chunkCount) return;
 
-        const start = chunkIndex * FILE_CHUNK_SIZE;
-        const end = Math.min(start + FILE_CHUNK_SIZE, file.size);
+        const start = chunkIndex * normalizedChunkSize;
+        const end = Math.min(start + normalizedChunkSize, file.size);
         try {
           const committedBytes = await schedule(async () => {
             const content = new Uint8Array(await file.slice(start, end).arrayBuffer());
@@ -258,13 +325,20 @@ export async function uploadFilesConcurrently({
   files,
   reducers,
   timeoutMs = DEFAULT_REDUCER_TIMEOUT_MS,
+  chunkSizeBytes = DEFAULT_FILE_CHUNK_SIZE,
   chunkConcurrency = DEFAULT_CHUNK_CONCURRENCY,
+  maxInFlightBytes = DEFAULT_MAX_IN_FLIGHT_BYTES,
   fileConcurrency = DEFAULT_FILE_CONCURRENCY,
   onProgress,
 }: UploadBatchOptions): Promise<BatchUploadResult> {
   if (!files.length) return { uploadedFiles: [], failedFiles: [] };
 
-  const chunkLimit = normalizeConcurrency(chunkConcurrency, 'Chunk concurrency');
+  const normalizedChunkSize = normalizeByteCount(chunkSizeBytes, 'Chunk size');
+  const chunkLimit = resolveChunkConcurrency(
+    chunkConcurrency,
+    normalizedChunkSize,
+    maxInFlightBytes
+  );
   const fileLimit = normalizeConcurrency(fileConcurrency, 'File concurrency');
   const uploadAbortController = new AbortController();
   const scheduleChunk = createConcurrencyLimiter(
@@ -314,7 +388,9 @@ export async function uploadFilesConcurrently({
           file,
           reducers,
           timeoutMs,
+          chunkSizeBytes: normalizedChunkSize,
           chunkConcurrency: chunkLimit,
+          maxInFlightBytes,
           scheduleChunk,
           signal: uploadAbortController.signal,
           onTimeout: () => uploadAbortController.abort(),

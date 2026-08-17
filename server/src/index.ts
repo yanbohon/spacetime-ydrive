@@ -7,7 +7,8 @@ import {
   type ReducerCtx,
 } from 'spacetimedb/server';
 
-const FILE_CHUNK_SIZE = 1024 * 1024;
+const LEGACY_FILE_CHUNK_SIZE = 1024 * 1024;
+const MAX_FILE_CHUNK_SIZE = 4 * 1024 * 1024;
 const MAX_CHUNK_COUNT = 0xffff_ffffn;
 
 const storedFile = table(
@@ -60,6 +61,7 @@ const uploadSession = table(
     next_chunk_index: t.u32(),
     received_bytes: t.u64(),
     created_at: t.timestamp(),
+    chunk_size_bytes: t.u32().default(LEGACY_FILE_CHUNK_SIZE),
   }
 );
 
@@ -85,30 +87,85 @@ function deleteUpload(ctx: Ctx, uploadToken: string) {
   ctx.db.uploadSession.upload_token.delete(uploadToken);
 }
 
-export const startUpload = spacetimedb.reducer(
+function validateFileName(name: string) {
+  const trimmedName = name.trim();
+  if (!trimmedName) {
+    throw new SenderError('File name is required.');
+  }
+  return trimmedName;
+}
+
+function validateUploadToken(ctx: Ctx, uploadToken: string) {
+  const trimmedToken = uploadToken.trim();
+  if (!trimmedToken || trimmedToken.length > 128 || trimmedToken !== uploadToken) {
+    throw new SenderError('Invalid upload token.');
+  }
+  if (ctx.db.uploadSession.upload_token.find(uploadToken)) {
+    throw new SenderError('Upload token is already in use.');
+  }
+}
+
+function validateChunkSize(chunkSizeBytes: number) {
+  if (
+    chunkSizeBytes !== LEGACY_FILE_CHUNK_SIZE &&
+    chunkSizeBytes !== 2 * LEGACY_FILE_CHUNK_SIZE &&
+    chunkSizeBytes !== MAX_FILE_CHUNK_SIZE
+  ) {
+    throw new SenderError('Unsupported file chunk size.');
+  }
+}
+
+function startUploadSession(
+  ctx: Ctx,
+  uploadToken: string,
+  name: string,
+  mimeType: string,
+  sizeBytes: bigint,
+  chunkSizeBytes: number
+) {
+  const trimmedName = validateFileName(name);
+  validateUploadToken(ctx, uploadToken);
+  validateChunkSize(chunkSizeBytes);
+
+  const sizePerChunk = BigInt(chunkSizeBytes);
+  const chunkCount = sizeBytes === 0n ? 0n : (sizeBytes - 1n) / sizePerChunk + 1n;
+  if (chunkCount > MAX_CHUNK_COUNT) {
+    throw new SenderError('File is too large.');
+  }
+
+  const file = ctx.db.storedFile.insert({
+    id: 0n,
+    name: trimmedName,
+    mime_type: mimeType || 'application/octet-stream',
+    size_bytes: sizeBytes,
+    created_at: ctx.timestamp,
+    ready: false,
+    chunk_count: Number(chunkCount),
+  });
+  ctx.db.uploadSession.insert({
+    upload_token: uploadToken,
+    file_id: file.id,
+    next_chunk_index: 0,
+    received_bytes: 0n,
+    created_at: ctx.timestamp,
+    chunk_size_bytes: chunkSizeBytes,
+  });
+}
+
+export const uploadFile = spacetimedb.reducer(
   {
-    upload_token: t.string(),
     name: t.string(),
     mime_type: t.string(),
     size_bytes: t.u64(),
+    content: t.byteArray(),
   },
-  (ctx, { upload_token, name, mime_type, size_bytes }) => {
-    const trimmedName = name.trim();
-    const trimmedToken = upload_token.trim();
-    if (!trimmedName) {
-      throw new SenderError('File name is required.');
+  (ctx, { name, mime_type, size_bytes, content }) => {
+    const trimmedName = validateFileName(name);
+    if (content.byteLength > MAX_FILE_CHUNK_SIZE) {
+      throw new SenderError('File is too large for direct upload.');
     }
-    if (!trimmedToken || trimmedToken.length > 128 || trimmedToken !== upload_token) {
-      throw new SenderError('Invalid upload token.');
-    }
-    if (ctx.db.uploadSession.upload_token.find(upload_token)) {
-      throw new SenderError('Upload token is already in use.');
-    }
-
-    const sizePerChunk = BigInt(FILE_CHUNK_SIZE);
-    const chunkCount = size_bytes === 0n ? 0n : (size_bytes - 1n) / sizePerChunk + 1n;
-    if (chunkCount > MAX_CHUNK_COUNT) {
-      throw new SenderError('File is too large.');
+    if (BigInt(content.byteLength) !== size_bytes) {
+      throw new SenderError('File size does not match its content.');
     }
 
     const file = ctx.db.storedFile.insert({
@@ -117,16 +174,49 @@ export const startUpload = spacetimedb.reducer(
       mime_type: mime_type || 'application/octet-stream',
       size_bytes,
       created_at: ctx.timestamp,
-      ready: false,
-      chunk_count: Number(chunkCount),
+      ready: true,
+      chunk_count: 0,
     });
-    ctx.db.uploadSession.insert({
+    ctx.db.fileBlob.insert({ id: file.id, content });
+  }
+);
+
+export const startUpload = spacetimedb.reducer(
+  {
+    upload_token: t.string(),
+    name: t.string(),
+    mime_type: t.string(),
+    size_bytes: t.u64(),
+  },
+  (ctx, { upload_token, name, mime_type, size_bytes }) => {
+    startUploadSession(
+      ctx,
       upload_token,
-      file_id: file.id,
-      next_chunk_index: 0,
-      received_bytes: 0n,
-      created_at: ctx.timestamp,
-    });
+      name,
+      mime_type,
+      size_bytes,
+      LEGACY_FILE_CHUNK_SIZE
+    );
+  }
+);
+
+export const startUploadV2 = spacetimedb.reducer(
+  {
+    upload_token: t.string(),
+    name: t.string(),
+    mime_type: t.string(),
+    size_bytes: t.u64(),
+    chunk_size_bytes: t.u32(),
+  },
+  (ctx, { upload_token, name, mime_type, size_bytes, chunk_size_bytes }) => {
+    startUploadSession(
+      ctx,
+      upload_token,
+      name,
+      mime_type,
+      size_bytes,
+      chunk_size_bytes
+    );
   }
 );
 
@@ -152,11 +242,11 @@ export const uploadChunk = spacetimedb.reducer(
       throw new SenderError('File chunk has already been uploaded.');
     }
 
-    const chunkOffset = BigInt(chunk_index) * BigInt(FILE_CHUNK_SIZE);
+    const chunkOffset = BigInt(chunk_index) * BigInt(session.chunk_size_bytes);
     const remainingBytes = file.size_bytes - chunkOffset;
     const expectedBytes = Number(
-      remainingBytes > BigInt(FILE_CHUNK_SIZE)
-        ? BigInt(FILE_CHUNK_SIZE)
+      remainingBytes > BigInt(session.chunk_size_bytes)
+        ? BigInt(session.chunk_size_bytes)
         : remainingBytes
     );
     if (content.byteLength !== expectedBytes) {

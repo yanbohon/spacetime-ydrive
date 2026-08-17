@@ -38,7 +38,9 @@ import CancelUploadReducer from "./cancel_upload_reducer";
 import DeleteFileReducer from "./delete_file_reducer";
 import FinishUploadReducer from "./finish_upload_reducer";
 import StartUploadReducer from "./start_upload_reducer";
+import StartUploadV2Reducer from "./start_upload_v_2_reducer";
 import UploadChunkReducer from "./upload_chunk_reducer";
+import UploadFileReducer from "./upload_file_reducer";
 
 // Import all procedure arg schemas
 
@@ -96,7 +98,9 @@ const reducersSchema = __reducers(
   __reducerSchema("delete_file", DeleteFileReducer),
   __reducerSchema("finish_upload", FinishUploadReducer),
   __reducerSchema("start_upload", StartUploadReducer),
+  __reducerSchema("start_upload_v_2", StartUploadV2Reducer),
   __reducerSchema("upload_chunk", UploadChunkReducer),
+  __reducerSchema("upload_file", UploadFileReducer),
 );
 
 /** The schema information for all procedures in this module. This is defined the same way as the procedures would have been defined in the server. */
