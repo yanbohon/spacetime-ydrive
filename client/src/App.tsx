@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertCircle,
@@ -105,7 +105,25 @@ function App() {
   const connection = getConnection() as DbConnection | null;
   const initialCode = useMemo(readCodeFromHash, []);
   const [mode, setMode] = useState<Mode>(initialCode ? 'receive' : 'send');
+  const tabRefs = useRef<Record<Mode, HTMLButtonElement | null>>({ send: null, receive: null, manage: null });
 
+  const selectMode = (nextMode: Mode) => {
+    setMode(nextMode);
+    tabRefs.current[nextMode]?.focus();
+  };
+
+  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, currentMode: Mode) => {
+    const modes: Mode[] = ['send', 'receive', 'manage'];
+    const index = modes.indexOf(currentMode);
+    let nextMode: Mode | null = null;
+    if (event.key === 'ArrowRight') nextMode = modes[(index + 1) % modes.length];
+    if (event.key === 'ArrowLeft') nextMode = modes[(index - 1 + modes.length) % modes.length];
+    if (event.key === 'Home') nextMode = modes[0];
+    if (event.key === 'End') nextMode = modes[modes.length - 1];
+    if (!nextMode) return;
+    event.preventDefault();
+    selectMode(nextMode);
+  };
   return (
     <div className="quick-shell">
       <header className="quick-header">
@@ -126,25 +144,25 @@ function App() {
           <p>上传后生成一次快传取件码。只有拿到取件码的人，才能在有效期内查看和下载文件。</p>
         </section>
 
-        <section className="transfer-card">
+        <section className="transfer-card" aria-label="文件快传">
           <div className="mode-tabs" role="tablist" aria-label="快传模式">
-            <button type="button" role="tab" aria-selected={mode === 'send'} className={mode === 'send' ? 'active' : ''} onClick={() => setMode('send')}>
-              <Send size={17} /> 我要发送
+            <button id="send-tab" ref={(node) => { tabRefs.current.send = node; }} type="button" role="tab" aria-controls="send-panel" aria-selected={mode === 'send'} tabIndex={mode === 'send' ? 0 : -1} className={mode === 'send' ? 'active' : ''} onClick={() => setMode('send')} onKeyDown={(event) => handleTabKeyDown(event, 'send')}>
+              <Send size={17} aria-hidden="true" /> 我要发送
             </button>
-            <button type="button" role="tab" aria-selected={mode === 'receive'} className={mode === 'receive' ? 'active' : ''} onClick={() => setMode('receive')}>
-              <ArrowDownToLine size={17} /> 我要接收
+            <button id="receive-tab" ref={(node) => { tabRefs.current.receive = node; }} type="button" role="tab" aria-controls="receive-panel" aria-selected={mode === 'receive'} tabIndex={mode === 'receive' ? 0 : -1} className={mode === 'receive' ? 'active' : ''} onClick={() => setMode('receive')} onKeyDown={(event) => handleTabKeyDown(event, 'receive')}>
+              <ArrowDownToLine size={17} aria-hidden="true" /> 我要接收
             </button>
-            <button type="button" role="tab" aria-selected={mode === 'manage'} className={mode === 'manage' ? 'active' : ''} onClick={() => setMode('manage')}>
-              <History size={17} /> 我的快传
+            <button id="manage-tab" ref={(node) => { tabRefs.current.manage = node; }} type="button" role="tab" aria-controls="manage-panel" aria-selected={mode === 'manage'} tabIndex={mode === 'manage' ? 0 : -1} className={mode === 'manage' ? 'active' : ''} onClick={() => setMode('manage')} onKeyDown={(event) => handleTabKeyDown(event, 'manage')}>
+              <History size={17} aria-hidden="true" /> 我的快传
             </button>
           </div>
-          <div className="mode-pane" hidden={mode !== 'send'}>
+          <div id="send-panel" className="mode-pane" role="tabpanel" aria-labelledby="send-tab" hidden={mode !== 'send'}>
             <SendPane connection={connection} isActive={isActive} />
           </div>
-          <div className="mode-pane" hidden={mode !== 'receive'}>
+          <div id="receive-panel" className="mode-pane" role="tabpanel" aria-labelledby="receive-tab" hidden={mode !== 'receive'}>
             <ReceivePane connection={connection} isActive={isActive} initialCode={initialCode} />
           </div>
-          {mode === 'manage' && <div className="mode-pane">
+          {mode === 'manage' && <div id="manage-panel" className="mode-pane" role="tabpanel" aria-labelledby="manage-tab">
             <ManagePane connection={connection} isActive={isActive} />
           </div>}
         </section>
@@ -257,17 +275,18 @@ function SendPane({ connection, isActive }: PaneProps) {
       }}
     >
       {selectedFiles.length === 0 ? (
-        <label className="upload-drop">
-          <span className="upload-illustration"><Upload size={26} /></span>
-          <strong>{uploadDraft ? '选择原文件继续上传' : '拖入文件，或点击选择'}</strong>
+        <div className="upload-drop">
+          <span className="upload-illustration" aria-hidden="true"><Upload size={26} /></span>
+          <strong>{uploadDraft ? '选择原文件继续上传' : '拖入文件开始快传'}</strong>
           <span>{uploadDraft ? `${uploadDraft.files.length} 个文件等待恢复` : '支持多文件和大文件分块上传'}</span>
-          <input ref={inputRef} type="file" multiple onChange={(event) => addFiles(event.target.files ?? [])} />
-        </label>
+          <button className="upload-select-button" type="button" disabled={isBusy} onClick={() => inputRef.current?.click()}>{uploadDraft ? '选择原文件' : '选择文件'}</button>
+          <input ref={inputRef} className="file-input" type="file" multiple tabIndex={-1} onChange={(event) => addFiles(event.target.files ?? [])} />
+        </div>
       ) : (
         <>
           <div className="selection-heading">
             <div><strong>{uploadDraft ? '待恢复文件' : '待发送文件'}</strong><span>{selectedFiles.length} 个 · {formatBytes(totalSize)}</span></div>
-            {!uploadDraft && <label className="add-file-button"><Plus size={15} /> 添加<input ref={inputRef} type="file" multiple disabled={isBusy} onChange={(event) => addFiles(event.target.files ?? [])} /></label>}
+            {!uploadDraft && <><button className="add-file-button" type="button" disabled={isBusy} onClick={() => inputRef.current?.click()}><Plus size={15} aria-hidden="true" /> 添加文件</button><input ref={inputRef} className="file-input" type="file" multiple tabIndex={-1} disabled={isBusy} onChange={(event) => addFiles(event.target.files ?? [])} /></>}
           </div>
           <div className="selected-files">
             {selectedFiles.map((file, index) => {
@@ -347,14 +366,16 @@ function ManagePane({ connection, isActive }: PaneProps) {
     }
   };
 
-  const deleteOwnedTransfer = async (transferId: bigint) => {
+  const deleteOwnedTransfer = async (transferId: bigint, pickupCode: string) => {
     if (!connection) return;
+    const confirmed = window.confirm(`确定删除快传 ${formatPickupCode(pickupCode)}？删除后文件将无法恢复。`);
+    if (!confirmed) return;
     try {
       await connection.reducers.deleteTransfer({ transferId });
       setTransfers((current) => current.filter((item) => item.transferId !== transferId));
       setNotice({ type: 'success', message: '快传已删除。' });
     } catch (error) {
-      setNotice({ type: 'error', message: errorMessage(error, '删除失败。') });
+      setNotice({ type: 'error', message: errorMessage(error, '删除失败，请重试。') });
     }
   };
 
@@ -388,7 +409,7 @@ function ManagePane({ connection, isActive }: PaneProps) {
               <div className="manage-actions">
                 {item.sealed && <button type="button" title="复制链接" aria-label={`复制快传 ${formatPickupCode(item.pickupCode)} 的链接`} onClick={() => void copyLink(item.pickupCode)}><Copy size={16} /></button>}
                 {item.sealed && <select aria-label={`修改快传 ${formatPickupCode(item.pickupCode)} 的有效期`} defaultValue="" onChange={(event) => { if (event.target.value) void updateExpiry(item.transferId, Number(event.target.value)); event.target.value = ''; }}><option value="" disabled>有效期</option><option value="24">24 小时</option><option value="72">3 天</option><option value="168">7 天</option><option value="0">永久</option></select>}
-                <button type="button" title="删除" aria-label={`删除快传 ${formatPickupCode(item.pickupCode)}`} onClick={() => void deleteOwnedTransfer(item.transferId)}><Trash2 size={16} /></button>
+                <button className="destructive-action" type="button" title="删除" aria-label={`删除快传 ${formatPickupCode(item.pickupCode)}`} onClick={() => void deleteOwnedTransfer(item.transferId, item.pickupCode)}><Trash2 size={16} /></button>
               </div>
             </div>
           ))}
@@ -562,24 +583,48 @@ function ReceivedFile({ file, pickupCode, selected, onToggle, onCopy, onPreview 
 function MediaPreview({ file, pickupCode, onClose }: { file: TransferFileResult; pickupCode: string; onClose: () => void }) {
   const previewUrl = getPreviewUrl(file.id, pickupCode);
   const downloadUrl = getDownloadUrl(file.id, pickupCode);
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const appShell = document.querySelector<HTMLElement>('.quick-shell');
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+      const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], audio[controls], video[controls]'));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.body.style.overflow = 'hidden';
+    if (appShell) appShell.inert = true;
     window.addEventListener('keydown', handleKeyDown);
+    closeButtonRef.current?.focus();
     return () => {
       document.body.style.overflow = previousOverflow;
+      if (appShell) appShell.inert = false;
       window.removeEventListener('keydown', handleKeyDown);
+      previousFocus?.focus();
     };
   }, [onClose]);
 
   return createPortal(
-    <div className="preview-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="preview-dialog" role="dialog" aria-modal="true" aria-label={`预览 ${file.name}`}>
-        <header><strong title={file.name}>{file.name}</strong><button type="button" aria-label="关闭预览" onClick={onClose}><X size={19} /></button></header>
+    <div className="preview-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section ref={dialogRef} className="preview-dialog" role="dialog" aria-modal="true" aria-label={`预览 ${file.name}`}>
+        <header><strong title={file.name}>{file.name}</strong><button ref={closeButtonRef} type="button" aria-label="关闭预览" onClick={onClose}><X size={19} /></button></header>
         <div className="preview-body">
           {file.mimeType.startsWith('image/') && <img src={previewUrl} alt={file.name} />}
           {file.mimeType.startsWith('video/') && <video src={previewUrl} controls preload="metadata" />}
@@ -607,10 +652,10 @@ function UploadProgress({ progress }: { progress: BatchUploadProgress }) {
 function NoticeView({ notice, onClose }: { notice: Notice; onClose: () => void }) {
   if (!notice) return null;
   return (
-    <div className={`notice ${notice.type}`} role="status">
-      {notice.type === 'success' ? <Check size={16} /> : <AlertCircle size={16} />}
+    <div className={`notice ${notice.type}`} role={notice.type === 'error' ? 'alert' : 'status'}>
+      {notice.type === 'success' ? <Check size={16} aria-hidden="true" /> : <AlertCircle size={16} aria-hidden="true" />}
       <span>{notice.message}</span>
-      <button type="button" onClick={onClose} aria-label="关闭提示"><X size={15} /></button>
+      <button type="button" onClick={onClose} aria-label="关闭提示"><X size={15} aria-hidden="true" /></button>
     </div>
   );
 }
