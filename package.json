@@ -16,6 +16,6 @@
     "test": "node --experimental-strip-types --test client/src/*.test.mjs server/src/*.test.mjs",
     "typecheck": "npm --workspace server run typecheck && npm --workspace client run typecheck",
     "generate": "spacetime generate --lang typescript --module-path ./server --out-dir ./client/src/module_bindings",
-    "publish:db:maincloud": "spacetime publish ydrive-axerq --server maincloud --yes"
+    "publish:db:maincloud": "spacetime publish ydrive-axerq --server maincloud --delete-data=always --yes"
   }
 }

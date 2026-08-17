@@ -35,69 +35,31 @@ import {
 
 // Import all reducer arg schemas
 import CancelUploadReducer from "./cancel_upload_reducer";
-import DeleteFileReducer from "./delete_file_reducer";
+import DeleteTransferReducer from "./delete_transfer_reducer";
 import FinishUploadReducer from "./finish_upload_reducer";
-import StartUploadReducer from "./start_upload_reducer";
+import SealTransferReducer from "./seal_transfer_reducer";
 import StartUploadV2Reducer from "./start_upload_v_2_reducer";
 import UploadChunkReducer from "./upload_chunk_reducer";
 import UploadFileReducer from "./upload_file_reducer";
 
 // Import all procedure arg schemas
+import * as CreateTransferProcedure from "./create_transfer_procedure";
+import * as ReceiveTransferProcedure from "./receive_transfer_procedure";
 
 // Import all table schema definitions
-import FileBlobRow from "./file_blob_table";
-import FileChunkRow from "./file_chunk_table";
-import StoredFileRow from "./stored_file_table";
 
 /** Type-only namespace exports for generated type groups. */
 
 /** The schema information for all tables in this module. This is defined the same was as the tables would have been defined in the server. */
 const tablesSchema = __schema({
-  fileBlob: __table({
-    name: 'file_blob',
-    indexes: [
-      { accessor: 'id', name: 'file_blob_id_idx_btree', algorithm: 'btree', columns: [
-        'id',
-      ] },
-    ],
-    constraints: [
-      { name: 'file_blob_id_key', constraint: 'unique', columns: ['id'] },
-    ],
-  }, FileBlobRow),
-  fileChunk: __table({
-    name: 'file_chunk',
-    indexes: [
-      { accessor: 'by_file_chunk', name: 'file_chunk_file_id_chunk_index_idx_btree', algorithm: 'btree', columns: [
-        'fileId',
-        'chunkIndex',
-      ] },
-      { accessor: 'id', name: 'file_chunk_id_idx_btree', algorithm: 'btree', columns: [
-        'id',
-      ] },
-    ],
-    constraints: [
-      { name: 'file_chunk_id_key', constraint: 'unique', columns: ['id'] },
-    ],
-  }, FileChunkRow),
-  storedFile: __table({
-    name: 'stored_file',
-    indexes: [
-      { accessor: 'id', name: 'stored_file_id_idx_btree', algorithm: 'btree', columns: [
-        'id',
-      ] },
-    ],
-    constraints: [
-      { name: 'stored_file_id_key', constraint: 'unique', columns: ['id'] },
-    ],
-  }, StoredFileRow),
 });
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
 const reducersSchema = __reducers(
   __reducerSchema("cancel_upload", CancelUploadReducer),
-  __reducerSchema("delete_file", DeleteFileReducer),
+  __reducerSchema("delete_transfer", DeleteTransferReducer),
   __reducerSchema("finish_upload", FinishUploadReducer),
-  __reducerSchema("start_upload", StartUploadReducer),
+  __reducerSchema("seal_transfer", SealTransferReducer),
   __reducerSchema("start_upload_v_2", StartUploadV2Reducer),
   __reducerSchema("upload_chunk", UploadChunkReducer),
   __reducerSchema("upload_file", UploadFileReducer),
@@ -105,6 +67,8 @@ const reducersSchema = __reducers(
 
 /** The schema information for all procedures in this module. This is defined the same way as the procedures would have been defined in the server. */
 const proceduresSchema = __procedures(
+  __procedureSchema("create_transfer", CreateTransferProcedure.params, CreateTransferProcedure.returnType),
+  __procedureSchema("receive_transfer", ReceiveTransferProcedure.params, ReceiveTransferProcedure.returnType),
 );
 
 /** The remote SpacetimeDB module schema, both runtime and type information. */

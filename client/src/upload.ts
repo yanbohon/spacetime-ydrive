@@ -28,6 +28,7 @@ type UploadFileLike = Pick<File, 'name' | 'type' | 'size' | 'slice'>;
 
 type UploadReducers = {
   uploadFile: (args: {
+    transferId: bigint;
     uploadToken: string;
     name: string;
     mimeType: string;
@@ -35,6 +36,7 @@ type UploadReducers = {
     content: Uint8Array;
   }) => Promise<unknown>;
   startUploadV2: (args: {
+    transferId: bigint;
     uploadToken: string;
     name: string;
     mimeType: string;
@@ -54,6 +56,7 @@ type TaskScheduler = <T>(task: () => Promise<T>) => Promise<T>;
 
 type UploadFileOptions = {
   file: UploadFileLike;
+  transferId: bigint;
   reducers: UploadReducers;
   uploadToken?: string;
   timeoutMs?: number;
@@ -88,6 +91,7 @@ export type BatchUploadResult = {
 };
 
 type UploadBatchOptions = {
+  transferId: bigint;
   files: UploadFileLike[];
   reducers: UploadReducers;
   timeoutMs?: number;
@@ -204,6 +208,7 @@ function timedCall<T>(
 
 export async function uploadFileInChunks({
   file,
+  transferId,
   reducers,
   uploadToken = crypto.randomUUID(),
   timeoutMs = DEFAULT_REDUCER_TIMEOUT_MS,
@@ -240,6 +245,7 @@ export async function uploadFileInChunks({
         await timedCall(
           () =>
             reducers.uploadFile({
+              transferId,
               uploadToken,
               name: file.name,
               mimeType: file.type || 'application/octet-stream',
@@ -262,6 +268,7 @@ export async function uploadFileInChunks({
     await timedCall(
       () =>
         reducers.startUploadV2({
+          transferId,
           uploadToken,
           name: file.name,
           mimeType: file.type || 'application/octet-stream',
@@ -330,6 +337,7 @@ export async function uploadFileInChunks({
 
 export async function uploadFilesConcurrently({
   files,
+  transferId,
   reducers,
   timeoutMs = DEFAULT_REDUCER_TIMEOUT_MS,
   transferPolicy = DEFAULT_UPLOAD_TRANSFER_POLICY,
@@ -392,6 +400,7 @@ export async function uploadFilesConcurrently({
       try {
         await uploadFileInChunks({
           file,
+          transferId,
           reducers,
           timeoutMs,
           transferPolicy: {

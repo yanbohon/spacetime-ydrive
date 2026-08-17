@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
-import { DbConnection, tables, type SubscriptionHandle } from '../src/module_bindings';
+import { DbConnection } from '../src/module_bindings';
 import { uploadFileInChunks } from '../src/upload';
 
 const MIB = 1024 * 1024;
 const DATABASE_URI = 'wss://maincloud.spacetimedb.com';
 const DATABASE_NAME = 'ydrive-axerq';
+const DATABASE_HTTP_URI = DATABASE_URI.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
 const DEFAULT_SIZE_BYTES = 64 * MIB;
 const CONNECT_TIMEOUT_MS = 15_000;
 
@@ -45,25 +46,6 @@ function connect(): Promise<DbConnection> {
   });
 }
 
-function waitForMetadata(connection: DbConnection): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error('Timed out subscribing to file metadata.')),
-      CONNECT_TIMEOUT_MS
-    );
-    connection
-      .subscriptionBuilder()
-      .onApplied(() => {
-        clearTimeout(timer);
-        resolve();
-      })
-      .onError(() => {
-        clearTimeout(timer);
-        reject(new Error('Failed to subscribe to file metadata.'));
-      })
-      .subscribe([tables.storedFile]);
-  });
-}
 
 function createFixture(sizeBytes: number) {
   const bytes = new Uint8Array(sizeBytes);
@@ -86,69 +68,25 @@ function createFixture(sizeBytes: number) {
   };
 }
 
-async function verifyDownloadedHash(
-  connection: DbConnection,
-  fileId: bigint,
-  chunkCount: number,
-  expectedHash: string
-): Promise<void> {
-  let subscription: SubscriptionHandle | undefined;
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error('Timed out downloading benchmark chunks.')),
-      60_000
-    );
-    subscription = connection
-      .subscriptionBuilder()
-      .onApplied((ctx) => {
-        clearTimeout(timer);
-        const actualHash = createHash('sha256');
-        if (chunkCount > 0) {
-          const chunks = [...ctx.db.fileChunk.iter()]
-            .filter((chunk) => chunk.fileId === fileId)
-            .sort((left, right) => left.chunkIndex - right.chunkIndex);
-          if (
-            chunks.length !== chunkCount ||
-            chunks.some((chunk, index) => chunk.chunkIndex !== index)
-          ) {
-            reject(new Error('Downloaded benchmark chunks are incomplete.'));
-            return;
-          }
-          for (const chunk of chunks) actualHash.update(chunk.content);
-        } else {
-          const blob = ctx.db.fileBlob.id.find(fileId);
-          if (!blob) {
-            reject(new Error('Downloaded benchmark blob is missing.'));
-            return;
-          }
-          actualHash.update(blob.content);
-        }
-        if (actualHash.digest('hex') !== expectedHash) {
-          reject(new Error('Downloaded benchmark data hash does not match.'));
-          return;
-        }
-        resolve();
-      })
-      .onError(() => {
-        clearTimeout(timer);
-        reject(new Error('Failed to download benchmark chunks.'));
-      })
-      .subscribe([
-        chunkCount > 0
-          ? tables.fileChunk.where((row) => row.fileId.eq(fileId))
-          : tables.fileBlob.where((row) => row.id.eq(fileId)),
-      ]);
-  }).finally(() => subscription?.unsubscribe());
-}
+async function verifyDownloadedHash(fileId: bigint, pickupCode: string, expectedHash: string): Promise<void> {
+  const downloadUrl = `${DATABASE_HTTP_URI}/v1/database/${encodeURIComponent(DATABASE_NAME)}/route/download?id=${fileId}&code=${encodeURIComponent(pickupCode)}`;
+  const response = await fetch(downloadUrl);
+  if (!response.ok || !response.body) {
+    throw new Error(`Benchmark download failed with HTTP ${response.status}.`);
+  }
 
-async function cleanupUpload(uploadToken: string) {
-  const connection = await connect();
-  try {
-    await connection.reducers.cancelUpload({ uploadToken });
-  } finally {
-    connection.disconnect();
+  const actualHash = createHash('sha256');
+  const reader = response.body.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    actualHash.update(value);
+  }
+  if (actualHash.digest('hex') !== expectedHash) {
+    throw new Error('Downloaded benchmark data hash does not match.');
   }
 }
+
 
 async function runProfile(
   profile: Profile,
@@ -159,12 +97,16 @@ async function runProfile(
   const uploadToken = `benchmark-${profile.chunkSizeBytes}-${profile.chunkConcurrency}-${Date.now()}`;
   const fileName = `${uploadToken}.bin`;
   const file = { ...fixture.file, name: fileName };
-  let uploadedFileId: bigint | undefined;
+  let transferId: bigint | undefined;
+  let pickupCode = '';
 
   try {
-    await waitForMetadata(connection);
+    const created = await connection.procedures.createTransfer({ expiresInHours: 1 });
+    transferId = created.transferId;
+    pickupCode = created.pickupCode;
     const startedAt = performance.now();
     await uploadFileInChunks({
+      transferId,
       file,
       reducers: connection.reducers,
       uploadToken,
@@ -176,22 +118,14 @@ async function runProfile(
       timeoutMs: 20_000,
     });
     const durationSeconds = (performance.now() - startedAt) / 1000;
-    const uploadedFile = [...connection.db.storedFile.iter()].find(
-      (row) => row.name === fileName
-    );
-    if (!uploadedFile?.ready) {
-      throw new Error('Uploaded file metadata was not committed.');
-    }
-    uploadedFileId = uploadedFile.id;
+    await connection.reducers.sealTransfer({ transferId });
+    const received = await connection.procedures.receiveTransfer({ pickupCode });
+    const uploadedFile = received.files.find((row) => row.name === fileName);
+    if (!uploadedFile) throw new Error('Uploaded file metadata was not committed.');
 
     if (verifyHash) {
       const expectedHash = createHash('sha256').update(fixture.bytes).digest('hex');
-      await verifyDownloadedHash(
-        connection,
-        uploadedFile.id,
-        uploadedFile.chunkCount,
-        expectedHash
-      );
+      await verifyDownloadedHash(uploadedFile.id, pickupCode, expectedHash);
     }
 
     const mibPerSecond = file.size / MIB / durationSeconds;
@@ -199,7 +133,7 @@ async function runProfile(
       profile: profile.label,
       durationSeconds: Number(durationSeconds.toFixed(3)),
       mibPerSecond: Number(mibPerSecond.toFixed(2)),
-      chunkCount: uploadedFile.chunkCount,
+      chunkCount: Math.ceil(file.size / profile.chunkSizeBytes),
       verified: verifyHash,
       error: '',
     };
@@ -213,11 +147,10 @@ async function runProfile(
       error: error instanceof Error ? error.message : String(error),
     };
   } finally {
-    if (uploadedFileId !== undefined) {
-      await connection.reducers.deleteFile({ id: uploadedFileId }).catch(() => undefined);
+    if (transferId !== undefined) {
+      await connection.reducers.deleteTransfer({ transferId }).catch(() => undefined);
     }
     connection.disconnect();
-    await cleanupUpload(uploadToken).catch(() => undefined);
   }
 }
 

@@ -3,9 +3,11 @@ import test from 'node:test';
 
 import {
   assembleByteRange,
+  normalizePickupCode,
   contentDisposition,
   parseByteRange,
   parseDownloadFileId,
+  parsePickupCodeFromUri,
 } from './download.ts';
 
 test('parses a file id from absolute and relative request URIs', () => {
@@ -19,6 +21,22 @@ test('parses a file id from absolute and relative request URIs', () => {
   assert.equal(parseDownloadFileId('/download?id=-1'), null);
   assert.equal(parseDownloadFileId('/download?id=1&id=2'), null);
   assert.equal(parseDownloadFileId('/download?id=18446744073709551616'), null);
+});
+
+test('normalizes human-readable pickup codes and parses them from download URIs', () => {
+  assert.equal(normalizePickupCode('a1b2-c3d4-e5f6-7890'), 'A1B2C3D4E5F67890');
+  assert.equal(normalizePickupCode(' A1B2 C3D4 E5F6 7890 '), 'A1B2C3D4E5F67890');
+  assert.equal(normalizePickupCode('A1B2-C3D4'), null);
+  assert.equal(normalizePickupCode('G1B2-C3D4-E5F6-7890'), null);
+  assert.equal(
+    parsePickupCodeFromUri('/download?id=29&code=a1b2-c3d4-e5f6-7890'),
+    'A1B2C3D4E5F67890'
+  );
+  assert.equal(parsePickupCodeFromUri('/download?id=29'), null);
+  assert.equal(
+    parsePickupCodeFromUri('/download?code=A1B2C3D4E5F67890&code=0011223344556677'),
+    null
+  );
 });
 
 test('parses closed, open-ended, and suffix byte ranges', () => {
@@ -90,5 +108,9 @@ test('creates an ASCII fallback and UTF-8 download filename', () => {
   assert.equal(
     contentDisposition('测试 "file".txt'),
     'attachment; filename="__ _file_.txt"; filename*=UTF-8\'\'%E6%B5%8B%E8%AF%95%20%22file%22.txt'
+  );
+  assert.equal(
+    contentDisposition('preview.mp4', 'inline'),
+    'inline; filename="preview.mp4"; filename*=UTF-8\'\'preview.mp4'
   );
 });

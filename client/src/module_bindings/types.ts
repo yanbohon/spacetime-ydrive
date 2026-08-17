@@ -10,6 +10,13 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
+export const CreatedTransferResult = __t.object("CreatedTransferResult", {
+  transferId: __t.u64(),
+  pickupCode: __t.string(),
+  expiresAtMicros: __t.u64(),
+});
+export type CreatedTransferResult = __Infer<typeof CreatedTransferResult>;
+
 export const FileBlob = __t.object("FileBlob", {
   id: __t.u64(),
   content: __t.byteArray(),
@@ -26,6 +33,7 @@ export type FileChunk = __Infer<typeof FileChunk>;
 
 export const StoredFile = __t.object("StoredFile", {
   id: __t.u64(),
+  transferId: __t.u64(),
   name: __t.string(),
   mimeType: __t.string(),
   sizeBytes: __t.u64(),
@@ -33,8 +41,37 @@ export const StoredFile = __t.object("StoredFile", {
   ready: __t.bool(),
   chunkCount: __t.u32(),
   chunkSizeBytes: __t.u32(),
+  ownerIdentity: __t.string(),
 });
 export type StoredFile = __Infer<typeof StoredFile>;
+
+export const Transfer = __t.object("Transfer", {
+  id: __t.u64(),
+  pickupCode: __t.string(),
+  ownerIdentity: __t.string(),
+  createdAt: __t.timestamp(),
+  expiresAtMicros: __t.u64(),
+  sealed: __t.bool(),
+});
+export type Transfer = __Infer<typeof Transfer>;
+
+export const TransferFileResult = __t.object("TransferFileResult", {
+  id: __t.u64(),
+  name: __t.string(),
+  mimeType: __t.string(),
+  sizeBytes: __t.u64(),
+  createdAt: __t.timestamp(),
+});
+export type TransferFileResult = __Infer<typeof TransferFileResult>;
+
+export const TransferResult = __t.object("TransferResult", {
+  pickupCode: __t.string(),
+  expiresAtMicros: __t.u64(),
+  get files() {
+    return __t.array(TransferFileResult);
+  },
+});
+export type TransferResult = __Infer<typeof TransferResult>;
 
 export const UploadSession = __t.object("UploadSession", {
   uploadToken: __t.string(),
@@ -43,6 +80,7 @@ export const UploadSession = __t.object("UploadSession", {
   receivedBytes: __t.u64(),
   createdAt: __t.timestamp(),
   chunkSizeBytes: __t.u32(),
+  ownerIdentity: __t.string(),
 });
 export type UploadSession = __Infer<typeof UploadSession>;
 

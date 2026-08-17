@@ -4,7 +4,17 @@ export const SPACETIMEDB_HTTP_URI =
   import.meta.env.VITE_SPACETIMEDB_HTTP_URI ||
   SPACETIMEDB_URI.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
 
-export function getDownloadUrl(fileId: bigint) {
+function getFileUrl(fileId: bigint, pickupCode: string, preview: boolean) {
   const baseUri = SPACETIMEDB_HTTP_URI.replace(/\/$/, '');
-  return `${baseUri}/v1/database/${encodeURIComponent(MODULE_NAME)}/route/download?id=${fileId}`;
+  const code = pickupCode.replace(/[\s-]/g, '').toUpperCase();
+  const previewParam = preview ? '&preview=1' : '';
+  return `${baseUri}/v1/database/${encodeURIComponent(MODULE_NAME)}/route/download?id=${fileId}&code=${encodeURIComponent(code)}${previewParam}`;
+}
+
+export function getDownloadUrl(fileId: bigint, pickupCode: string) {
+  return getFileUrl(fileId, pickupCode, false);
+}
+
+export function getPreviewUrl(fileId: bigint, pickupCode: string) {
+  return getFileUrl(fileId, pickupCode, true);
 }

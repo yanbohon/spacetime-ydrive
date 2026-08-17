@@ -11,32 +11,59 @@ import {
 import {
   assembleByteRange,
   contentDisposition,
+  normalizePickupCode,
   parseByteRange,
   parseDownloadFileId,
+  parsePickupCodeFromUri,
   type ByteRange,
 } from './download';
 
 const LEGACY_FILE_CHUNK_SIZE = 1024 * 1024;
 const MAX_FILE_CHUNK_SIZE = 4 * 1024 * 1024;
 const MAX_CHUNK_COUNT = 0xffff_ffffn;
+const MAX_EXPIRY_HOURS = 24 * 7;
+const MICROS_PER_HOUR = 60n * 60n * 1_000_000n;
 
-const storedFile = table(
-  { name: 'stored_file', public: true },
+const transfer = table(
+  { name: 'transfer', public: false },
   {
     id: t.u64().primaryKey().autoInc(),
+    pickup_code: t.string().unique(),
+    owner_identity: t.string(),
+    created_at: t.timestamp(),
+    expires_at_micros: t.u64(),
+    sealed: t.bool(),
+  }
+);
+
+const storedFile = table(
+  {
+    name: 'stored_file',
+    public: false,
+    indexes: [
+      {
+        accessor: 'by_transfer',
+        algorithm: 'btree',
+        columns: ['transfer_id'],
+      },
+    ],
+  },
+  {
+    id: t.u64().primaryKey().autoInc(),
+    transfer_id: t.u64().default(0n),
     name: t.string(),
     mime_type: t.string(),
     size_bytes: t.u64(),
     created_at: t.timestamp(),
     ready: t.bool().default(true),
     chunk_count: t.u32().default(0),
-    // Zero marks rows created before this column existed; the handler infers from chunk 0.
     chunk_size_bytes: t.u32().default(0),
+    owner_identity: t.string().default(''),
   }
 );
 
 const fileBlob = table(
-  { name: 'file_blob', public: true },
+  { name: 'file_blob', public: false },
   {
     id: t.u64().primaryKey(),
     content: t.byteArray(),
@@ -46,7 +73,7 @@ const fileBlob = table(
 const fileChunk = table(
   {
     name: 'file_chunk',
-    public: true,
+    public: false,
     indexes: [
       {
         accessor: 'by_file_chunk',
@@ -64,45 +91,85 @@ const fileChunk = table(
 );
 
 const uploadSession = table(
-  { name: 'upload_session' },
+  { name: 'upload_session', public: false },
   {
     upload_token: t.string().primaryKey(),
     file_id: t.u64().unique(),
-    // Kept for migration compatibility; parallel uploads use this as the accepted chunk count.
     next_chunk_index: t.u32(),
     received_bytes: t.u64(),
     created_at: t.timestamp(),
     chunk_size_bytes: t.u32().default(LEGACY_FILE_CHUNK_SIZE),
+    owner_identity: t.string().default(''),
   }
 );
 
-const spacetimedb = schema({ storedFile, fileBlob, fileChunk, uploadSession });
+const spacetimedb = schema({ transfer, storedFile, fileBlob, fileChunk, uploadSession });
 export default spacetimedb;
 
 type Ctx = ReducerCtx<InferSchema<typeof spacetimedb>>;
 
+const transferFileResult = t.object('TransferFileResult', {
+  id: t.u64(),
+  name: t.string(),
+  mime_type: t.string(),
+  size_bytes: t.u64(),
+  created_at: t.timestamp(),
+});
+
+const transferResult = t.object('TransferResult', {
+  pickup_code: t.string(),
+  expires_at_micros: t.u64(),
+  files: t.array(transferFileResult),
+});
+
+const createdTransferResult = t.object('CreatedTransferResult', {
+  transfer_id: t.u64(),
+  pickup_code: t.string(),
+  expires_at_micros: t.u64(),
+});
+
+function assertOwner(ctx: Ctx, ownerIdentity: string) {
+  if (!ownerIdentity || ownerIdentity !== ctx.sender.toHexString()) {
+    throw new SenderError('Only the transfer owner can modify it.');
+  }
+}
+
 function deleteChunks(ctx: Ctx, fileId: bigint) {
-  const chunks = [...ctx.db.fileChunk.by_file_chunk.filter(fileId)];
-  for (const chunk of chunks) {
+  for (const chunk of ctx.db.fileChunk.by_file_chunk.filter(fileId)) {
     ctx.db.fileChunk.id.delete(chunk.id);
   }
 }
 
-function deleteUpload(ctx: Ctx, uploadToken: string) {
-  const session = ctx.db.uploadSession.upload_token.find(uploadToken);
-  if (!session) return;
+function deleteStoredFile(ctx: Ctx, fileId: bigint) {
+  const upload = ctx.db.uploadSession.file_id.find(fileId);
+  if (upload) ctx.db.uploadSession.upload_token.delete(upload.upload_token);
+  deleteChunks(ctx, fileId);
+  ctx.db.fileBlob.id.delete(fileId);
+  ctx.db.storedFile.id.delete(fileId);
+}
 
-  deleteChunks(ctx, session.file_id);
-  ctx.db.fileBlob.id.delete(session.file_id);
-  ctx.db.storedFile.id.delete(session.file_id);
-  ctx.db.uploadSession.upload_token.delete(uploadToken);
+function deleteTransferData(ctx: Ctx, transferId: bigint) {
+  for (const file of [...ctx.db.storedFile.by_transfer.filter(transferId)]) {
+    deleteStoredFile(ctx, file.id);
+  }
+  ctx.db.transfer.id.delete(transferId);
+}
+
+function isTransferExpired(expiresAtMicros: bigint, nowMicros: bigint) {
+  return expiresAtMicros !== 0n && expiresAtMicros <= nowMicros;
+}
+
+function purgeExpiredTransfers(ctx: Ctx) {
+  const now = ctx.timestamp.microsSinceUnixEpoch;
+  for (const candidate of ctx.db.transfer.iter()) {
+    if (isTransferExpired(candidate.expires_at_micros, now)) deleteTransferData(ctx, candidate.id);
+  }
 }
 
 function validateFileName(name: string) {
   const trimmedName = name.trim();
-  if (!trimmedName) {
-    throw new SenderError('File name is required.');
-  }
+  if (!trimmedName) throw new SenderError('File name is required.');
+  if (trimmedName.length > 255) throw new SenderError('File name is too long.');
   return trimmedName;
 }
 
@@ -126,30 +193,44 @@ function validateChunkSize(chunkSizeBytes: number) {
   }
 }
 
+function requireWritableTransfer(ctx: Ctx, transferId: bigint) {
+  const candidate = ctx.db.transfer.id.find(transferId);
+  if (!candidate) throw new SenderError('Transfer not found.');
+  assertOwner(ctx, candidate.owner_identity);
+  if (isTransferExpired(candidate.expires_at_micros, ctx.timestamp.microsSinceUnixEpoch)) {
+    deleteTransferData(ctx, candidate.id);
+    throw new SenderError('Transfer has expired.');
+  }
+  if (candidate.sealed) throw new SenderError('Transfer has already been sent.');
+  return candidate;
+}
+
 function startUploadSession(
   ctx: Ctx,
+  transferId: bigint,
   uploadToken: string,
   name: string,
   mimeType: string,
   sizeBytes: bigint,
   chunkSizeBytes: number
 ) {
+  requireWritableTransfer(ctx, transferId);
   const trimmedName = validateFileName(name);
   validateUploadToken(ctx, uploadToken);
   validateChunkSize(chunkSizeBytes);
 
   const sizePerChunk = BigInt(chunkSizeBytes);
   const chunkCount = sizeBytes === 0n ? 0n : (sizeBytes - 1n) / sizePerChunk + 1n;
-  if (chunkCount > MAX_CHUNK_COUNT) {
-    throw new SenderError('File is too large.');
-  }
+  if (chunkCount > MAX_CHUNK_COUNT) throw new SenderError('File requires too many chunks.');
 
   const file = ctx.db.storedFile.insert({
     id: 0n,
+    transfer_id: transferId,
     name: trimmedName,
     mime_type: mimeType || 'application/octet-stream',
     size_bytes: sizeBytes,
     created_at: ctx.timestamp,
+    owner_identity: ctx.sender.toHexString(),
     ready: false,
     chunk_count: Number(chunkCount),
     chunk_size_bytes: chunkSizeBytes,
@@ -160,19 +241,88 @@ function startUploadSession(
     next_chunk_index: 0,
     received_bytes: 0n,
     created_at: ctx.timestamp,
+    owner_identity: ctx.sender.toHexString(),
     chunk_size_bytes: chunkSizeBytes,
   });
 }
 
+export const createTransfer = spacetimedb.procedure(
+  { expires_in_hours: t.u32() },
+  createdTransferResult,
+  (ctx, { expires_in_hours }) => {
+    const expiryHours = expires_in_hours;
+    if (expiryHours > MAX_EXPIRY_HOURS) {
+      throw new SenderError('Transfers can be kept for at most 7 days or forever.');
+    }
+    const pickupCode = ctx.newUuidV4().toString().replace(/-/g, '').slice(0, 16).toUpperCase();
+    return ctx.withTx((tx) => {
+      purgeExpiredTransfers(tx);
+      if (tx.db.transfer.pickup_code.find(pickupCode)) {
+        throw new SenderError('Could not allocate a pickup code. Please retry.');
+      }
+      const expiresAtMicros = expiryHours === 0
+        ? 0n
+        : tx.timestamp.microsSinceUnixEpoch + BigInt(expiryHours) * MICROS_PER_HOUR;
+      const created = tx.db.transfer.insert({
+        id: 0n,
+        pickup_code: pickupCode,
+        owner_identity: tx.sender.toHexString(),
+        created_at: tx.timestamp,
+        expires_at_micros: expiresAtMicros,
+        sealed: false,
+      });
+      return {
+        transfer_id: created.id,
+        pickup_code: created.pickup_code,
+        expires_at_micros: created.expires_at_micros,
+      };
+    });
+  }
+);
+
+export const receiveTransfer = spacetimedb.procedure(
+  { pickup_code: t.string() },
+  transferResult,
+  (ctx, { pickup_code }) => {
+    const normalizedCode = normalizePickupCode(pickup_code);
+    if (!normalizedCode) throw new SenderError('Invalid pickup code.');
+    return ctx.withTx((tx) => {
+      const candidate = tx.db.transfer.pickup_code.find(normalizedCode);
+      if (!candidate || !candidate.sealed) throw new SenderError('Transfer not found.');
+      if (isTransferExpired(candidate.expires_at_micros, tx.timestamp.microsSinceUnixEpoch)) {
+        deleteTransferData(tx, candidate.id);
+        throw new SenderError('Transfer has expired.');
+      }
+      const files = [...tx.db.storedFile.by_transfer.filter(candidate.id)]
+        .filter((file) => file.ready)
+        .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+        .map((file) => ({
+          id: file.id,
+          name: file.name,
+          mime_type: file.mime_type,
+          size_bytes: file.size_bytes,
+          created_at: file.created_at,
+        }));
+      return {
+        pickup_code: candidate.pickup_code,
+        expires_at_micros: candidate.expires_at_micros,
+        files,
+      };
+    });
+  }
+);
+
 export const uploadFile = spacetimedb.reducer(
   {
+    transfer_id: t.u64(),
     upload_token: t.string(),
     name: t.string(),
     mime_type: t.string(),
     size_bytes: t.u64(),
     content: t.byteArray(),
   },
-  (ctx, { upload_token, name, mime_type, size_bytes, content }) => {
+  (ctx, { transfer_id, upload_token, name, mime_type, size_bytes, content }) => {
+    requireWritableTransfer(ctx, transfer_id);
     const trimmedName = validateFileName(name);
     validateUploadToken(ctx, upload_token);
     if (content.byteLength > MAX_FILE_CHUNK_SIZE) {
@@ -184,10 +334,12 @@ export const uploadFile = spacetimedb.reducer(
 
     const file = ctx.db.storedFile.insert({
       id: 0n,
+      transfer_id,
       name: trimmedName,
       mime_type: mime_type || 'application/octet-stream',
       size_bytes,
       created_at: ctx.timestamp,
+      owner_identity: ctx.sender.toHexString(),
       ready: false,
       chunk_count: 0,
       chunk_size_bytes: 0,
@@ -199,41 +351,25 @@ export const uploadFile = spacetimedb.reducer(
       next_chunk_index: 0,
       received_bytes: size_bytes,
       created_at: ctx.timestamp,
+      owner_identity: ctx.sender.toHexString(),
       chunk_size_bytes: LEGACY_FILE_CHUNK_SIZE,
     });
   }
 );
 
-export const startUpload = spacetimedb.reducer(
-  {
-    upload_token: t.string(),
-    name: t.string(),
-    mime_type: t.string(),
-    size_bytes: t.u64(),
-  },
-  (ctx, { upload_token, name, mime_type, size_bytes }) => {
-    startUploadSession(
-      ctx,
-      upload_token,
-      name,
-      mime_type,
-      size_bytes,
-      LEGACY_FILE_CHUNK_SIZE
-    );
-  }
-);
-
 export const startUploadV2 = spacetimedb.reducer(
   {
+    transfer_id: t.u64(),
     upload_token: t.string(),
     name: t.string(),
     mime_type: t.string(),
     size_bytes: t.u64(),
     chunk_size_bytes: t.u32(),
   },
-  (ctx, { upload_token, name, mime_type, size_bytes, chunk_size_bytes }) => {
+  (ctx, { transfer_id, upload_token, name, mime_type, size_bytes, chunk_size_bytes }) => {
     startUploadSession(
       ctx,
+      transfer_id,
       upload_token,
       name,
       mime_type,
@@ -251,16 +387,12 @@ export const uploadChunk = spacetimedb.reducer(
   },
   (ctx, { upload_token, chunk_index, content }) => {
     const session = ctx.db.uploadSession.upload_token.find(upload_token);
-    if (!session) {
-      throw new SenderError('Upload session not found.');
-    }
+    if (!session) throw new SenderError('Upload session not found.');
+    assertOwner(ctx, session.owner_identity);
     const file = ctx.db.storedFile.id.find(session.file_id);
-    if (!file || file.ready) {
-      throw new SenderError('Upload session is no longer active.');
-    }
-    if (chunk_index >= file.chunk_count) {
-      throw new SenderError('Unexpected file chunk.');
-    }
+    if (!file || file.ready) throw new SenderError('Upload session is no longer active.');
+    requireWritableTransfer(ctx, file.transfer_id);
+    if (chunk_index >= file.chunk_count) throw new SenderError('Unexpected file chunk.');
     if ([...ctx.db.fileChunk.by_file_chunk.filter([file.id, chunk_index])].length) {
       throw new SenderError('File chunk has already been uploaded.');
     }
@@ -282,10 +414,9 @@ export const uploadChunk = spacetimedb.reducer(
       chunk_index,
       content,
     });
-    const receivedChunkCount = session.next_chunk_index + 1;
     ctx.db.uploadSession.upload_token.update({
       ...session,
-      next_chunk_index: receivedChunkCount,
+      next_chunk_index: session.next_chunk_index + 1,
       received_bytes: session.received_bytes + BigInt(content.byteLength),
     });
   }
@@ -295,17 +426,14 @@ export const finishUpload = spacetimedb.reducer(
   { upload_token: t.string() },
   (ctx, { upload_token }) => {
     const session = ctx.db.uploadSession.upload_token.find(upload_token);
-    if (!session) {
-      throw new SenderError('Upload session not found.');
-    }
+    if (!session) throw new SenderError('Upload session not found.');
+    assertOwner(ctx, session.owner_identity);
     const file = ctx.db.storedFile.id.find(session.file_id);
-    if (!file) {
-      throw new SenderError('Upload session is no longer active.');
-    }
-    const receivedChunkCount = session.next_chunk_index;
+    if (!file) throw new SenderError('Upload session is no longer active.');
+    requireWritableTransfer(ctx, file.transfer_id);
     if (
       session.received_bytes !== file.size_bytes ||
-      receivedChunkCount !== file.chunk_count
+      session.next_chunk_index !== file.chunk_count
     ) {
       throw new SenderError('Upload is incomplete.');
     }
@@ -322,23 +450,31 @@ export const finishUpload = spacetimedb.reducer(
 export const cancelUpload = spacetimedb.reducer(
   { upload_token: t.string() },
   (ctx, { upload_token }) => {
-    deleteUpload(ctx, upload_token);
+    const session = ctx.db.uploadSession.upload_token.find(upload_token);
+    if (!session) return;
+    assertOwner(ctx, session.owner_identity);
+    deleteStoredFile(ctx, session.file_id);
   }
 );
 
-export const deleteFile = spacetimedb.reducer(
-  { id: t.u64() },
-  (ctx, { id }) => {
-    if (!ctx.db.storedFile.id.find(id)) {
-      throw new SenderError('File not found.');
-    }
-    const upload = ctx.db.uploadSession.file_id.find(id);
-    if (upload) {
-      ctx.db.uploadSession.upload_token.delete(upload.upload_token);
-    }
-    deleteChunks(ctx, id);
-    ctx.db.fileBlob.id.delete(id);
-    ctx.db.storedFile.id.delete(id);
+export const sealTransfer = spacetimedb.reducer(
+  { transfer_id: t.u64() },
+  (ctx, { transfer_id }) => {
+    const candidate = requireWritableTransfer(ctx, transfer_id);
+    const hasReadyFile = [...ctx.db.storedFile.by_transfer.filter(transfer_id)]
+      .some((file) => file.ready);
+    if (!hasReadyFile) throw new SenderError('Upload at least one file before sending.');
+    ctx.db.transfer.id.update({ ...candidate, sealed: true });
+  }
+);
+
+export const deleteTransfer = spacetimedb.reducer(
+  { transfer_id: t.u64() },
+  (ctx, { transfer_id }) => {
+    const candidate = ctx.db.transfer.id.find(transfer_id);
+    if (!candidate) return;
+    assertOwner(ctx, candidate.owner_identity);
+    deleteTransferData(ctx, transfer_id);
   }
 );
 
@@ -367,12 +503,12 @@ function fileHeaders(file: {
   mime_type: string;
   size_bytes: bigint;
   chunk_count: number;
-}) {
+}, inlinePreview: boolean) {
   return {
     ...DOWNLOAD_CORS_HEADERS,
     'accept-ranges': 'bytes',
-    'cache-control': 'private, no-cache',
-    'content-disposition': contentDisposition(file.name),
+    'cache-control': 'private, no-store',
+    'content-disposition': contentDisposition(file.name, inlinePreview ? 'inline' : 'attachment'),
     'content-type': file.mime_type || 'application/octet-stream',
     etag: `"ydrive-${file.id}-${file.size_bytes}-${file.chunk_count}"`,
   };
@@ -381,13 +517,27 @@ function fileHeaders(file: {
 function downloadHandler(headOnly: boolean) {
   return spacetimedb.httpHandler((ctx, request) => {
     const fileId = parseDownloadFileId(request.uri);
-    if (fileId === null) return textResponse('A valid file id is required.', 400);
+    const pickupCode = parsePickupCodeFromUri(request.uri);
+    if (fileId === null || pickupCode === null) {
+      return textResponse('A valid file id and pickup code are required.', 400);
+    }
 
     return ctx.withTx((tx) => {
-      const file = tx.db.storedFile.id.find(fileId);
-      if (!file || !file.ready) return textResponse('File not found.', 404);
+      const transferRow = tx.db.transfer.pickup_code.find(pickupCode);
+      if (!transferRow || !transferRow.sealed) return textResponse('File not found.', 404);
+      if (isTransferExpired(transferRow.expires_at_micros, tx.timestamp.microsSinceUnixEpoch)) {
+        deleteTransferData(tx, transferRow.id);
+        return textResponse('Transfer expired.', 410);
+      }
 
-      const headers = fileHeaders(file);
+      const file = tx.db.storedFile.id.find(fileId);
+      if (!file || !file.ready || file.transfer_id !== transferRow.id) {
+        return textResponse('File not found.', 404);
+      }
+
+      const inlinePreview = /(?:[?&])preview=1(?:[&#]|$)/.test(request.uri) &&
+        /^(image|audio|video)\//i.test(file.mime_type);
+      const headers = fileHeaders(file, inlinePreview);
       if (headOnly) {
         return new SyncResponse(null, {
           status: 200,

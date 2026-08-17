@@ -34,6 +34,38 @@ export function parseDownloadFileId(uri: string): bigint | null {
   return fileId;
 }
 
+export function normalizePickupCode(value: string): string | null {
+  const normalized = value.replace(/[\s-]/g, '').toUpperCase();
+  return /^[0-9A-F]{16}$/.test(normalized) ? normalized : null;
+}
+
+export function parsePickupCodeFromUri(uri: string): string | null {
+  const queryStart = uri.indexOf('?');
+  if (queryStart === -1) return null;
+  const fragmentStart = uri.indexOf('#', queryStart + 1);
+  const query = uri.slice(queryStart + 1, fragmentStart === -1 ? undefined : fragmentStart);
+  let pickupCode: string | null = null;
+
+  for (const parameter of query.split('&')) {
+    const separator = parameter.indexOf('=');
+    const key = separator === -1 ? parameter : parameter.slice(0, separator);
+    if (key !== 'code') continue;
+    if (pickupCode !== null) return null;
+
+    const encodedValue = separator === -1 ? '' : parameter.slice(separator + 1);
+    let value: string;
+    try {
+      value = decodeURIComponent(encodedValue.replace(/\+/g, ' '));
+    } catch {
+      return null;
+    }
+    pickupCode = normalizePickupCode(value);
+    if (pickupCode === null) return null;
+  }
+
+  return pickupCode;
+}
+
 export function parseByteRange(
   rangeHeader: string | null,
   sizeBytes: bigint
@@ -121,7 +153,10 @@ export function assembleByteRange(
   return output;
 }
 
-export function contentDisposition(fileName: string): string {
+export function contentDisposition(
+  fileName: string,
+  disposition: 'attachment' | 'inline' = 'attachment'
+): string {
   const fallback =
     fileName
       .replace(/[^\x20-\x7e]/g, '_')
@@ -135,5 +170,5 @@ export function contentDisposition(fileName: string): string {
   } catch {
     // A malformed surrogate in a stored filename should not break the download.
   }
-  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+  return `${disposition}; filename="${fallback}"; filename*=UTF-8''${encoded}`;
 }

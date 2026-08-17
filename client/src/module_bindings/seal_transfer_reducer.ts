@@ -11,8 +11,5 @@ import {
 } from "spacetimedb";
 
 export default {
-  uploadToken: __t.string(),
-  name: __t.string(),
-  mimeType: __t.string(),
-  sizeBytes: __t.u64(),
+  transferId: __t.u64(),
 };

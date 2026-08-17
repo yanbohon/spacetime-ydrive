@@ -31,12 +31,14 @@ test('uses larger v2 chunks while keeping the default in-flight window bounded',
   let maxActiveBytes = 0;
 
   await uploadFileInChunks({
+    transferId: 1n,
     file,
     uploadToken: 'optimized-file-test',
     timeoutMs: 100,
     reducers: {
       uploadFile: async () => assert.fail('large files must use chunked upload'),
-      startUploadV2: async ({ chunkSizeBytes }) => {
+      startUploadV2: async ({ transferId, chunkSizeBytes }) => {
+        assert.equal(transferId, 1n);
         advertisedChunkSize = chunkSizeBytes;
       },
       uploadChunk: async ({ content }) => {
@@ -59,6 +61,40 @@ test('uses larger v2 chunks while keeping the default in-flight window bounded',
   assert.ok(maxActiveBytes <= DEFAULT_MAX_IN_FLIGHT_BYTES);
 });
 
+test('uploads files larger than the former 64 MiB limit', async () => {
+  const fourMiB = 4 * 1024 * 1024;
+  const fileSize = 64 * 1024 * 1024 + 1;
+  let advertisedSize = 0n;
+  let uploadedChunks = 0;
+
+  await uploadFileInChunks({
+    transferId: 1n,
+    file: {
+      name: 'unlimited.bin',
+      type: 'application/octet-stream',
+      size: fileSize,
+      slice: (start, end) => ({
+        arrayBuffer: async () => new ArrayBuffer(end - start),
+      }),
+    },
+    transferPolicy: {
+      chunkSizeBytes: fourMiB,
+      chunkConcurrency: 1,
+      maxInFlightBytes: fourMiB,
+    },
+    reducers: {
+      uploadFile: async () => assert.fail('large files must use chunked upload'),
+      startUploadV2: async ({ sizeBytes }) => { advertisedSize = sizeBytes; },
+      uploadChunk: async () => { uploadedChunks += 1; },
+      finishUpload: async () => {},
+      cancelUpload: async () => {},
+    },
+  });
+
+  assert.equal(advertisedSize, BigInt(fileSize));
+  assert.equal(uploadedChunks, 17);
+});
+
 test('uploads a file no larger than one chunk with one binary write', async () => {
   const file = makeFile(1024 * 1024 + 137, 'small-fast-path.bin');
   const progress = [];
@@ -66,11 +102,13 @@ test('uploads a file no larger than one chunk with one binary write', async () =
   let finalized = false;
 
   await uploadFileInChunks({
+    transferId: 1n,
     file,
     uploadToken: 'unused-on-fast-path',
     timeoutMs: 100,
     reducers: {
-      uploadFile: async ({ content }) => {
+      uploadFile: async ({ transferId, content }) => {
+        assert.equal(transferId, 1n);
         uploadedContent = content;
       },
       startUploadV2: async () => assert.fail('the fast path must not create a session'),
@@ -94,6 +132,7 @@ test('cancels a timed-out direct upload by its upload token', async () => {
 
   await assert.rejects(
     uploadFileInChunks({
+      transferId: 1n,
       file,
       uploadToken: 'small-timeout-token',
       timeoutMs: 10,
@@ -120,6 +159,7 @@ test('uploads a large file as bounded chunks and reports committed bytes', async
   let finished = false;
 
   await uploadFileInChunks({
+    transferId: 1n,
     file,
     uploadToken: 'large-file-test',
     timeoutMs: 100,
@@ -161,6 +201,7 @@ test('keeps multiple chunks in flight for the same file', async () => {
   let maxInFlight = 0;
 
   await uploadFileInChunks({
+    transferId: 1n,
     file,
     uploadToken: 'parallel-test',
     transferPolicy: {
@@ -198,6 +239,7 @@ test('uploads multiple files concurrently while respecting the global chunk limi
   let maxActiveFiles = 0;
 
   const result = await uploadFilesConcurrently({
+    transferId: 1n,
     files,
     fileConcurrency: 2,
     transferPolicy: {
@@ -251,6 +293,7 @@ test('a batch timeout aborts queued chunks instead of starting more timeout wave
   let cancelCalls = 0;
 
   const result = await uploadFilesConcurrently({
+    transferId: 1n,
     files,
     fileConcurrency: 3,
     transferPolicy: {
@@ -287,6 +330,7 @@ test('rejects and cancels when a reducer promise never settles', async () => {
 
   await assert.rejects(
     uploadFileInChunks({
+      transferId: 1n,
       file,
       uploadToken: 'disconnect-test',
       timeoutMs: 10,

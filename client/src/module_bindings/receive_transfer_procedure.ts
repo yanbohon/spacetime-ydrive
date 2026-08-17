@@ -10,6 +10,11 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export default {
-  id: __t.u64(),
+import {
+  TransferResult,
+} from "./types";
+
+export const params = {
+  pickupCode: __t.string(),
 };
+export const returnType = TransferResult
