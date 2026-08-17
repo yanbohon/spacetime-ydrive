@@ -416,6 +416,7 @@ function ReceivePane({ connection, isActive, initialCode }: ReceivePaneProps) {
   const [transfer, setTransfer] = useState<TransferResult | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isAutoReceiving, setIsAutoReceiving] = useState(Boolean(initialCode));
   const [previewFile, setPreviewFile] = useState<TransferFileResult | null>(null);
   const [selectedFileIds, setSelectedFileIds] = useState<Set<bigint>>(new Set());
   const autoReceivedRef = useRef(false);
@@ -439,14 +440,15 @@ function ReceivePane({ connection, isActive, initialCode }: ReceivePaneProps) {
       setNotice({ type: 'error', message: errorMessage(error, '领取失败，请重试。') });
     } finally {
       setIsLoading(false);
+      setIsAutoReceiving(false);
     }
   }, [connection, isActive, isLoading, pickupCode]);
 
   useEffect(() => {
-    if (!initialCode || !isActive || autoReceivedRef.current) return;
+    if (!initialCode || !isActive || !connection || autoReceivedRef.current) return;
     autoReceivedRef.current = true;
     void receive();
-  }, [initialCode, isActive, receive]);
+  }, [connection, initialCode, isActive, receive]);
 
   const downloadSelected = () => {
     if (!transfer) return;
@@ -515,7 +517,7 @@ function ReceivePane({ connection, isActive, initialCode }: ReceivePaneProps) {
   }
 
   return (
-    <div className="pane-content receive-pane">
+    <div className="pane-content receive-pane" aria-busy={isLoading || isAutoReceiving}>
       <label className="code-input">
         <span>取件码</span>
         <input
@@ -525,12 +527,17 @@ function ReceivePane({ connection, isActive, initialCode }: ReceivePaneProps) {
           placeholder="0000-0000-0000-0000"
           autoComplete="off"
           spellCheck={false}
+          readOnly={isAutoReceiving}
           onChange={(event) => setPickupCode(formatPickupCode(event.target.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 16)))}
           onKeyDown={(event) => { if (event.key === 'Enter') void receive(); }}
         />
       </label>
-      <button className="primary-action" type="button" disabled={!isActive || isLoading || pickupCode.replace(/-/g, '').length !== 16} onClick={() => void receive()}>
-        {isLoading ? <><span className="button-spinner" /> 正在查找</> : <>领取文件 <ArrowRight size={17} /></>}
+      <button className="primary-action" type="button" disabled={!isActive || isLoading || isAutoReceiving || pickupCode.replace(/-/g, '').length !== 16} onClick={() => void receive()}>
+        {isAutoReceiving
+          ? <><span className="button-spinner" /> {isActive ? '正在领取文件' : '正在连接并领取文件'}</>
+          : isLoading
+            ? <><span className="button-spinner" /> 正在查找</>
+            : <>领取文件 <ArrowRight size={17} /></>}
       </button>
       <NoticeView notice={notice} onClose={() => setNotice(null)} />
     </div>
