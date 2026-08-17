@@ -7,7 +7,7 @@
 - 多文件选择和拖拽上传；不超过 4MiB 的文件一次写入二进制并轻量确认，大文件按 4MiB 分块、全局 2 块并发（最多 8MiB 在途）
 - 显示当前文件、批次、百分比与已确认字节数；连接异常时自动超时退出
 - 实时文件列表、搜索、列表/网格视图
-- 分块内容按序组装为浏览器原生下载，并兼容旧版整块文件
+- 文件使用 HTTP 直链下载，支持标准 Range、下载器多线程分段与断点续传
 - 文件删除
 - 元数据实时同步，文件二进制内容仅在下载时按需读取
 - 响应式桌面和移动端界面
@@ -54,6 +54,7 @@ npm run benchmark:upload -- 1x3 2x2 4x1 4x2 # 对 Maincloud 运行 64MiB 上传�
 
 ```dotenv
 VITE_SPACETIMEDB_URI=wss://maincloud.spacetimedb.com
+VITE_SPACETIMEDB_HTTP_URI=https://maincloud.spacetimedb.com
 VITE_SPACETIMEDB_MODULE=ydrive-axerq
 ```
 
@@ -71,4 +72,4 @@ VITE_SPACETIMEDB_MODULE=ydrive-axerq
 
 ## MVP 边界
 
-这个版本没有鉴权和文件所有权隔离，任何连接者都能查看、下载和删除全部文件。元数据会实时同步，二进制内容在下载时按文件 ID 读取；如果后续面向生产，应增加认证/权限、配额归属、断点续传、恶意文件扫描，以及对象存储策略。
+这个版本没有鉴权和文件所有权隔离，任何连接者都能查看、下载和删除全部文件。元数据会实时同步，二进制内容在下载时按 HTTP Range 从数据库读取；如果后续面向生产，应增加认证/权限、配额归属、恶意文件扫描，以及对象存储策略。

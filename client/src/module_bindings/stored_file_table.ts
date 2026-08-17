@@ -18,4 +18,5 @@ export default __t.row({
   createdAt: __t.timestamp().name("created_at"),
   ready: __t.bool(),
   chunkCount: __t.u32().name("chunk_count"),
+  chunkSizeBytes: __t.u32().name("chunk_size_bytes"),
 });

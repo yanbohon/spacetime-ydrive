@@ -1,11 +1,20 @@
 import {
+  Router,
   schema,
   SenderError,
+  SyncResponse,
   table,
   t,
   type InferSchema,
   type ReducerCtx,
 } from 'spacetimedb/server';
+import {
+  assembleByteRange,
+  contentDisposition,
+  parseByteRange,
+  parseDownloadFileId,
+  type ByteRange,
+} from './download';
 
 const LEGACY_FILE_CHUNK_SIZE = 1024 * 1024;
 const MAX_FILE_CHUNK_SIZE = 4 * 1024 * 1024;
@@ -21,6 +30,8 @@ const storedFile = table(
     created_at: t.timestamp(),
     ready: t.bool().default(true),
     chunk_count: t.u32().default(0),
+    // Zero marks rows created before this column existed; the handler infers from chunk 0.
+    chunk_size_bytes: t.u32().default(0),
   }
 );
 
@@ -141,6 +152,7 @@ function startUploadSession(
     created_at: ctx.timestamp,
     ready: false,
     chunk_count: Number(chunkCount),
+    chunk_size_bytes: chunkSizeBytes,
   });
   ctx.db.uploadSession.insert({
     upload_token: uploadToken,
@@ -178,6 +190,7 @@ export const uploadFile = spacetimedb.reducer(
       created_at: ctx.timestamp,
       ready: false,
       chunk_count: 0,
+      chunk_size_bytes: 0,
     });
     ctx.db.fileBlob.insert({ id: file.id, content });
     ctx.db.uploadSession.insert({
@@ -297,7 +310,11 @@ export const finishUpload = spacetimedb.reducer(
       throw new SenderError('Upload is incomplete.');
     }
 
-    ctx.db.storedFile.id.update({ ...file, ready: true });
+    ctx.db.storedFile.id.update({
+      ...file,
+      ready: true,
+      chunk_size_bytes: file.chunk_size_bytes || session.chunk_size_bytes,
+    });
     ctx.db.uploadSession.upload_token.delete(upload_token);
   }
 );
@@ -323,4 +340,146 @@ export const deleteFile = spacetimedb.reducer(
     ctx.db.fileBlob.id.delete(id);
     ctx.db.storedFile.id.delete(id);
   }
+);
+
+const DOWNLOAD_CORS_HEADERS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, HEAD, OPTIONS',
+  'access-control-allow-headers': 'Range, If-Range',
+  'access-control-expose-headers':
+    'Accept-Ranges, Content-Length, Content-Range, Content-Disposition, ETag',
+};
+
+function textResponse(message: string, status: number) {
+  return new SyncResponse(message, {
+    status,
+    headers: {
+      ...DOWNLOAD_CORS_HEADERS,
+      'content-type': 'text/plain; charset=utf-8',
+      'content-length': String(new TextEncoder().encode(message).byteLength),
+    },
+  });
+}
+
+function fileHeaders(file: {
+  id: bigint;
+  name: string;
+  mime_type: string;
+  size_bytes: bigint;
+  chunk_count: number;
+}) {
+  return {
+    ...DOWNLOAD_CORS_HEADERS,
+    'accept-ranges': 'bytes',
+    'cache-control': 'private, no-cache',
+    'content-disposition': contentDisposition(file.name),
+    'content-type': file.mime_type || 'application/octet-stream',
+    etag: `"ydrive-${file.id}-${file.size_bytes}-${file.chunk_count}"`,
+  };
+}
+
+function downloadHandler(headOnly: boolean) {
+  return spacetimedb.httpHandler((ctx, request) => {
+    const fileId = parseDownloadFileId(request.uri);
+    if (fileId === null) return textResponse('A valid file id is required.', 400);
+
+    return ctx.withTx((tx) => {
+      const file = tx.db.storedFile.id.find(fileId);
+      if (!file || !file.ready) return textResponse('File not found.', 404);
+
+      const headers = fileHeaders(file);
+      if (headOnly) {
+        return new SyncResponse(null, {
+          status: 200,
+          headers: { ...headers, 'content-length': String(file.size_bytes) },
+        });
+      }
+
+      const ifRange = request.headers.get('if-range');
+      const requestedRange = ifRange && ifRange !== headers.etag
+        ? null
+        : request.headers.get('range');
+      const parsedRange = parseByteRange(requestedRange, file.size_bytes);
+      if (parsedRange.kind === 'unsatisfiable') {
+        return new SyncResponse(null, {
+          status: 416,
+          headers: {
+            ...headers,
+            'content-length': '0',
+            'content-range': `bytes */${file.size_bytes}`,
+          },
+        });
+      }
+
+      const range: ByteRange = parsedRange.kind === 'partial'
+        ? parsedRange.range
+        : { start: 0n, end: file.size_bytes - 1n };
+      let body: Uint8Array;
+
+      if (file.size_bytes === 0n) {
+        body = new Uint8Array();
+      } else if (file.chunk_count === 0) {
+        const blob = tx.db.fileBlob.id.find(file.id);
+        if (!blob || BigInt(blob.content.byteLength) !== file.size_bytes) {
+          return textResponse('File content is unavailable.', 500);
+        }
+        body = new Uint8Array(blob.content).subarray(
+          Number(range.start),
+          Number(range.end + 1n)
+        );
+      } else {
+        const cachedChunks = new Map<number, Uint8Array>();
+        const getChunk = (chunkIndex: number) => {
+          const cached = cachedChunks.get(chunkIndex);
+          if (cached) return cached;
+          const matches = [
+            ...tx.db.fileChunk.by_file_chunk.filter([file.id, chunkIndex]),
+          ];
+          if (matches.length !== 1) return undefined;
+          const content = new Uint8Array(matches[0].content);
+          cachedChunks.set(chunkIndex, content);
+          return content;
+        };
+        const chunkSizeBytes = file.chunk_size_bytes || getChunk(0)?.byteLength || 0;
+        try {
+          body = assembleByteRange(range, chunkSizeBytes, getChunk);
+        } catch {
+          return textResponse('File content is unavailable.', 500);
+        }
+      }
+
+      const responseHeaders: Record<string, string> = {
+        ...headers,
+        'content-length': String(body.byteLength),
+      };
+      if (parsedRange.kind === 'partial') {
+        responseHeaders['content-range'] =
+          `bytes ${range.start}-${range.end}/${file.size_bytes}`;
+      }
+      return new SyncResponse(body, {
+        status: parsedRange.kind === 'partial' ? 206 : 200,
+        headers: responseHeaders,
+      });
+    });
+  });
+}
+
+export const downloadFile = downloadHandler(false);
+export const headDownloadFile = downloadHandler(true);
+export const downloadOptions = spacetimedb.httpHandler(() =>
+  new SyncResponse(null, {
+    status: 204,
+    headers: {
+      ...DOWNLOAD_CORS_HEADERS,
+      allow: 'GET, HEAD, OPTIONS',
+      'content-length': '0',
+    },
+  })
+);
+
+export const httpRoutes = spacetimedb.httpRouter(
+  new Router()
+    .get('/download', downloadFile)
+    .head('/download', headDownloadFile)
+    .options('/download', downloadOptions)
 );

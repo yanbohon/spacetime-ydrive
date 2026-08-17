@@ -32,6 +32,7 @@ export const StoredFile = __t.object("StoredFile", {
   createdAt: __t.timestamp(),
   ready: __t.bool(),
   chunkCount: __t.u32(),
+  chunkSizeBytes: __t.u32(),
 });
 export type StoredFile = __Infer<typeof StoredFile>;
 

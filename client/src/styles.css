@@ -76,7 +76,7 @@ th { padding: 12px 20px; color: #a2adba; font-size: 10px; font-weight: 600; lett
 th:nth-child(1) { width: 48%; } th:nth-child(2) { width: 16%; } th:nth-child(3) { width: 27%; } th:nth-child(4) { width: 9%; }
 td { padding: 13px 20px; border-top: 1px solid #f0f2f5; color: #344155; font-size: 13px; }
 tbody tr:hover { background: #fbfcfe; }
-.file-name { min-width: 0; display: flex; align-items: center; gap: 11px; padding: 0; overflow: hidden; border: 0; color: inherit; background: transparent; text-align: left; }
+.file-name { min-width: 0; display: flex; align-items: center; gap: 11px; padding: 0; overflow: hidden; border: 0; color: inherit; background: transparent; text-align: left; text-decoration: none; }
 .file-icon { width: 31px; height: 31px; flex: 0 0 31px; display: grid; place-items: center; border-radius: 6px; color: #4776c9; background: #edf3ff; }
 .file-icon.large { width: 42px; height: 42px; flex-basis: 42px; }
 .file-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -84,8 +84,8 @@ tbody tr:hover { background: #fbfcfe; }
 .muted-cell { color: #8692a4; font-size: 12px; }
 .file-menu { position: relative; display: flex; justify-content: flex-end; }
 .menu-popover { position: absolute; z-index: 3; top: 33px; right: 0; width: 110px; padding: 5px; border: 1px solid #e1e7ef; border-radius: 6px; background: #fff; box-shadow: 0 8px 24px rgba(35,52,79,.14); }
-.menu-popover button { width: 100%; display: flex; align-items: center; gap: 7px; padding: 8px 9px; border: 0; border-radius: 4px; color: #4b586c; background: transparent; font-size: 12px; text-align: left; }
-.menu-popover button:hover { background: #f4f7fb; } .menu-popover button.danger { color: #c34d59; }
+.menu-popover button, .menu-popover a { width: 100%; display: flex; align-items: center; gap: 7px; padding: 8px 9px; border: 0; border-radius: 4px; color: #4b586c; background: transparent; font-size: 12px; text-align: left; text-decoration: none; }
+.menu-popover button:hover, .menu-popover a:hover { background: #f4f7fb; } .menu-popover button.danger { color: #c34d59; }
 .empty-state { min-height: 300px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 35px; text-align: center; }
 .empty-icon { width: 52px; height: 52px; display: grid; place-items: center; margin-bottom: 15px; border-radius: 50%; color: #6c92d9; background: #edf3ff; }
 .empty-state h2 { margin: 0; color: #46546a; font-size: 15px; } .empty-state p { margin: 8px 0 0; color: #9ba6b6; font-size: 12px; }
@@ -95,7 +95,7 @@ tbody tr:hover { background: #fbfcfe; }
 .file-card { position: relative; min-width: 0; padding: 16px; border: 1px solid #e8edf3; border-radius: 7px; background: #fff; transition: border-color .2s, box-shadow .2s; }
 .file-card:hover { border-color: #c5d7f7; box-shadow: 0 4px 13px rgba(45,77,130,.08); }
 .card-top { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 18px; }
-.card-name { display: block; width: 100%; overflow: hidden; padding: 0; border: 0; color: #334155; background: transparent; font-size: 13px; font-weight: 600; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.card-name { display: block; width: 100%; overflow: hidden; padding: 0; border: 0; color: #334155; background: transparent; font-size: 13px; font-weight: 600; text-align: left; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
 .card-meta { margin-top: 8px; color: #9ba6b6; font-size: 11px; } .card-meta span { color: #d0d6df; }
 .footer-note { margin: 19px 0 0; color: #a6afbc; font-size: 11px; text-align: center; }
 

@@ -3,6 +3,7 @@ import {
   AlertCircle,
   Check,
   Cloud,
+  Download,
   File,
   FileArchive,
   FileAudio,
@@ -13,6 +14,7 @@ import {
   FolderOpen,
   Grid2X2,
   List,
+  Link2,
   MoreHorizontal,
   Search,
   Trash2,
@@ -20,8 +22,9 @@ import {
   X,
 } from 'lucide-react';
 import { useSpacetimeDB, useTable } from 'spacetimedb/react';
-import { DbConnection, tables, type SubscriptionHandle } from './module_bindings';
+import { DbConnection, tables } from './module_bindings';
 import type { StoredFile } from './module_bindings/types';
+import { getDownloadUrl } from './config';
 import {
   uploadFilesConcurrently,
   type BatchUploadProgress,
@@ -195,87 +198,16 @@ function App() {
     [connection, isActive, showNotice]
   );
 
-  const downloadFile = useCallback(
+  const copyDownloadLink = useCallback(
     async (file: StoredFile) => {
-      if (!connection || !isActive) {
-        showNotice({ type: 'error', message: '数据库尚未连接，请稍后重试。' });
-        return;
-      }
-
-      let canUnsubscribe = false;
-      let subscription!: SubscriptionHandle;
       try {
-        const parts = await new Promise<Uint8Array[]>((resolve, reject) => {
-          const timer = window.setTimeout(() => reject(new Error('读取文件内容超时，请重试。')), 30_000);
-          const fail = (message: string) => {
-            window.clearTimeout(timer);
-            reject(new Error(message));
-          };
-
-          if (file.chunkCount > 0) {
-            subscription = connection.subscriptionBuilder()
-              .onApplied((ctx) => {
-                canUnsubscribe = true;
-                window.clearTimeout(timer);
-                const chunks = [...ctx.db.fileChunk.iter()]
-                  .filter((chunk) => chunk.fileId === file.id)
-                  .sort((a, b) => a.chunkIndex - b.chunkIndex);
-                if (
-                  chunks.length !== file.chunkCount ||
-                  chunks.some((chunk, index) => chunk.chunkIndex !== index)
-                ) {
-                  reject(new Error('文件分块不完整。'));
-                  return;
-                }
-                const downloadedBytes = chunks.reduce((sum, chunk) => sum + chunk.content.byteLength, 0);
-                if (BigInt(downloadedBytes) !== file.sizeBytes) {
-                  reject(new Error('文件内容大小不匹配。'));
-                  return;
-                }
-                resolve(chunks.map((chunk) => new Uint8Array(chunk.content)));
-              })
-              .onError(() => fail('读取文件内容失败。'))
-              .subscribe([tables.fileChunk.where((row) => row.fileId.eq(file.id))]);
-            return;
-          }
-
-          if (file.sizeBytes === 0n) {
-            window.clearTimeout(timer);
-            resolve([new Uint8Array()]);
-            return;
-          }
-
-          subscription = connection.subscriptionBuilder()
-            .onApplied((ctx) => {
-              canUnsubscribe = true;
-              window.clearTimeout(timer);
-              const row = ctx.db.fileBlob.id.find(file.id);
-              if (!row) {
-                reject(new Error('文件内容不存在。'));
-                return;
-              }
-              resolve([new Uint8Array(row.content)]);
-            })
-            .onError(() => fail('读取文件内容失败。'))
-            .subscribe([tables.fileBlob.where((row) => row.id.eq(file.id))]);
-        });
-
-        const blob = new Blob(parts, { type: file.mimeType || 'application/octet-stream' });
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = file.name;
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-        window.setTimeout(() => URL.revokeObjectURL(url), 0);
-      } catch (error) {
-        showNotice({ type: 'error', message: error instanceof Error ? error.message : '下载失败，请重试。' });
-      } finally {
-        if (canUnsubscribe) subscription.unsubscribe();
+        await navigator.clipboard.writeText(getDownloadUrl(file.id));
+        showNotice({ type: 'success', message: '下载链接已复制。' });
+      } catch {
+        showNotice({ type: 'error', message: '复制失败，请从文件名链接复制地址。' });
       }
     },
-    [connection, isActive, showNotice]
+    [showNotice]
   );
 
   const onDrop = (event: React.DragEvent<HTMLDivElement>) => {
@@ -400,11 +332,11 @@ function App() {
               <div className="table-wrap">
                 <table>
                   <thead><tr><th>名称</th><th>大小</th><th>修改时间</th><th aria-label="操作" /></tr></thead>
-                  <tbody>{sortedFiles.map((file) => <FileRow key={String(file.id)} file={file} onDownload={downloadFile} onDelete={handleDelete} />)}</tbody>
+                  <tbody>{sortedFiles.map((file) => <FileRow key={String(file.id)} file={file} onCopyLink={copyDownloadLink} onDelete={handleDelete} />)}</tbody>
                 </table>
               </div>
             ) : (
-              <div className="grid-view">{sortedFiles.map((file) => <FileCard key={String(file.id)} file={file} onDownload={downloadFile} onDelete={handleDelete} />)}</div>
+              <div className="grid-view">{sortedFiles.map((file) => <FileCard key={String(file.id)} file={file} onCopyLink={copyDownloadLink} onDelete={handleDelete} />)}</div>
             )}
           </section>
           <p className="footer-note">文件存储在 SpacetimeDB 二进制数据库中 · 无需账号即可使用</p>
@@ -414,39 +346,43 @@ function App() {
   );
 }
 
-type FileActionProps = { file: StoredFile; onDownload: (file: StoredFile) => void | Promise<void>; onDelete: (id: bigint) => void };
+type FileActionProps = { file: StoredFile; onCopyLink: (file: StoredFile) => void | Promise<void>; onDelete: (id: bigint) => void };
 
-function FileRow({ file, onDownload, onDelete }: FileActionProps) {
+function FileRow({ file, onCopyLink, onDelete }: FileActionProps) {
   const Icon = getFileIcon(file.mimeType);
+  const downloadUrl = getDownloadUrl(file.id);
   return (
     <tr>
-      <td><button className="file-name" type="button" onClick={() => void onDownload(file)}><span className="file-icon"><Icon size={18} /></span><span className="file-label" title={file.name}>{file.name}</span></button></td>
+      <td><a className="file-name" href={downloadUrl} download={file.name}><span className="file-icon"><Icon size={18} /></span><span className="file-label" title={file.name}>{file.name}</span></a></td>
       <td className="muted-cell">{formatBytes(file.sizeBytes)}</td>
       <td className="muted-cell">{formatDate(file.createdAt)}</td>
-      <td><FileMenu file={file} onDownload={onDownload} onDelete={onDelete} /></td>
+      <td><FileMenu file={file} onCopyLink={onCopyLink} onDelete={onDelete} /></td>
     </tr>
   );
 }
 
-function FileCard({ file, onDownload, onDelete }: FileActionProps) {
+function FileCard({ file, onCopyLink, onDelete }: FileActionProps) {
   const Icon = getFileIcon(file.mimeType);
+  const downloadUrl = getDownloadUrl(file.id);
   return (
     <article className="file-card">
-      <div className="card-top"><span className="file-icon large"><Icon size={22} /></span><FileMenu file={file} onDownload={onDownload} onDelete={onDelete} /></div>
-      <button className="card-name" type="button" onClick={() => void onDownload(file)} title={file.name}>{file.name}</button>
+      <div className="card-top"><span className="file-icon large"><Icon size={22} /></span><FileMenu file={file} onCopyLink={onCopyLink} onDelete={onDelete} /></div>
+      <a className="card-name" href={downloadUrl} download={file.name} title={file.name}>{file.name}</a>
       <div className="card-meta">{formatBytes(file.sizeBytes)} <span>·</span> {formatDate(file.createdAt)}</div>
     </article>
   );
 }
 
-function FileMenu({ file, onDownload, onDelete }: FileActionProps) {
+function FileMenu({ file, onCopyLink, onDelete }: FileActionProps) {
   const [open, setOpen] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const downloadUrl = getDownloadUrl(file.id);
   return (
     <div className="file-menu">
       <button className="icon-button subtle" type="button" title="更多操作" aria-label="更多操作" onClick={() => { setOpen((value) => !value); setConfirmingDelete(false); }}><MoreHorizontal size={18} /></button>
       {open && <div className="menu-popover">
-        <button type="button" onClick={() => { void onDownload(file); setOpen(false); setConfirmingDelete(false); }}>下载</button>
+        <a href={downloadUrl} download={file.name} onClick={() => { setOpen(false); setConfirmingDelete(false); }}><Download size={14} /> 下载</a>
+        <button type="button" onClick={() => { void onCopyLink(file); setOpen(false); setConfirmingDelete(false); }}><Link2 size={14} /> 复制链接</button>
         <button
           className="danger"
           type="button"
