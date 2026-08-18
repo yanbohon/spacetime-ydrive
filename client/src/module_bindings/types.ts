@@ -10,6 +10,11 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
+export const ActiveConnection = __t.object("ActiveConnection", {
+  connectionId: __t.string(),
+});
+export type ActiveConnection = __Infer<typeof ActiveConnection>;
+
 export const CreatedTransferResult = __t.object("CreatedTransferResult", {
   transferId: __t.u64(),
   pickupCode: __t.string(),
@@ -42,6 +47,16 @@ export const OwnedTransferResult = __t.object("OwnedTransferResult", {
 });
 export type OwnedTransferResult = __Infer<typeof OwnedTransferResult>;
 
+export const PlatformStats = __t.object("PlatformStats", {
+  id: __t.u8(),
+  totalFiles: __t.u64(),
+  totalFileBytes: __t.u64(),
+  totalTrafficBytes: __t.u64(),
+  onlineConnections: __t.u64(),
+  updatedAt: __t.timestamp(),
+});
+export type PlatformStats = __Infer<typeof PlatformStats>;
+
 export const StoredFile = __t.object("StoredFile", {
   id: __t.u64(),
   transferId: __t.u64(),
@@ -55,6 +70,13 @@ export const StoredFile = __t.object("StoredFile", {
   ownerIdentity: __t.string(),
 });
 export type StoredFile = __Infer<typeof StoredFile>;
+
+export const TrafficFlush = __t.object("TrafficFlush", {
+  scheduledId: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+  pendingBytes: __t.u64(),
+});
+export type TrafficFlush = __Infer<typeof TrafficFlush>;
 
 export const Transfer = __t.object("Transfer", {
   id: __t.u64(),

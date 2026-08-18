@@ -50,11 +50,23 @@ import * as ListOwnedTransfersProcedure from "./list_owned_transfers_procedure";
 import * as ReceiveTransferProcedure from "./receive_transfer_procedure";
 
 // Import all table schema definitions
+import PlatformStatsRow from "./platform_stats_table";
 
 /** Type-only namespace exports for generated type groups. */
 
 /** The schema information for all tables in this module. This is defined the same was as the tables would have been defined in the server. */
 const tablesSchema = __schema({
+  platformStats: __table({
+    name: 'platform_stats',
+    indexes: [
+      { accessor: 'id', name: 'platform_stats_id_idx_btree', algorithm: 'btree', columns: [
+        'id',
+      ] },
+    ],
+    constraints: [
+      { name: 'platform_stats_id_key', constraint: 'unique', columns: ['id'] },
+    ],
+  }, PlatformStatsRow),
 });
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */

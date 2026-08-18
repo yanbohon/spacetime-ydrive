@@ -3,6 +3,7 @@ import {
   schema,
   SenderError,
   SyncResponse,
+  ScheduleAt,
   table,
   t,
   type InferSchema,
@@ -24,6 +25,7 @@ const MAX_FILE_CHUNK_SIZE = 4 * 1024 * 1024;
 const MAX_CHUNK_COUNT = 0xffff_ffffn;
 const MAX_EXPIRY_HOURS = 24 * 7;
 const MICROS_PER_HOUR = 60n * 60n * 1_000_000n;
+const TRAFFIC_FLUSH_DELAY_MICROS = 1_000_000n;
 
 const transfer = table(
   {
@@ -120,11 +122,123 @@ const uploadLease = table(
     expires_at_micros: t.u64(),
   }
 );
+const platformStats = table(
+  { name: 'platform_stats', public: true },
+  {
+    id: t.u8().primaryKey(),
+    total_files: t.u64(),
+    total_file_bytes: t.u64(),
+    total_traffic_bytes: t.u64(),
+    online_connections: t.u64(),
+    updated_at: t.timestamp(),
+  }
+);
+const activeConnection = table(
+  { name: 'active_connection', public: false },
+  { connection_id: t.string().primaryKey() }
+);
+const trafficFlush = table(
+  { name: 'traffic_flush', public: false },
+  {
+    scheduled_id: t.u64().primaryKey().autoInc(),
+    scheduled_at: t.scheduleAt(),
+    pending_bytes: t.u64(),
+  }
+);
 
-const spacetimedb = schema({ transfer, storedFile, fileBlob, fileChunk, uploadSession, uploadLease });
+const spacetimedb = schema({
+  transfer,
+  storedFile,
+  fileBlob,
+  fileChunk,
+  uploadSession,
+  uploadLease,
+  platformStats,
+  activeConnection,
+  trafficFlush,
+});
 export default spacetimedb;
 
 type Ctx = ReducerCtx<InferSchema<typeof spacetimedb>>;
+type StatsDelta = {
+  totalFiles?: bigint;
+  totalFileBytes?: bigint;
+  totalTrafficBytes?: bigint;
+};
+
+function initializePlatformStats(ctx: Ctx) {
+  return ctx.db.platformStats.insert({
+    id: 0,
+    total_files: 0n,
+    total_file_bytes: 0n,
+    total_traffic_bytes: 0n,
+    online_connections: 0n,
+    updated_at: ctx.timestamp,
+  });
+}
+
+function updatePlatformStats(ctx: Ctx, delta: StatsDelta) {
+  const current = ctx.db.platformStats.id.find(0) ?? initializePlatformStats(ctx);
+  ctx.db.platformStats.id.update({
+    ...current,
+    total_files: current.total_files + (delta.totalFiles ?? 0n),
+    total_file_bytes: current.total_file_bytes + (delta.totalFileBytes ?? 0n),
+    total_traffic_bytes: current.total_traffic_bytes + (delta.totalTrafficBytes ?? 0n),
+    updated_at: ctx.timestamp,
+  });
+}
+
+function syncOnlineConnections(ctx: Ctx) {
+  let onlineConnections = 0n;
+  for (const _connection of ctx.db.activeConnection.iter()) onlineConnections += 1n;
+  const current = ctx.db.platformStats.id.find(0) ?? initializePlatformStats(ctx);
+  ctx.db.platformStats.id.update({
+    ...current,
+    online_connections: onlineConnections,
+    updated_at: ctx.timestamp,
+  });
+}
+
+function recordTraffic(ctx: Ctx, bytes: bigint) {
+  if (bytes === 0n) return;
+  const pending = ctx.db.trafficFlush.iter().next().value;
+  if (pending) {
+    ctx.db.trafficFlush.scheduled_id.update({
+      ...pending,
+      pending_bytes: pending.pending_bytes + bytes,
+    });
+    return;
+  }
+  ctx.db.trafficFlush.insert({
+    scheduled_id: 0n,
+    scheduled_at: ScheduleAt.time(
+      ctx.timestamp.microsSinceUnixEpoch + TRAFFIC_FLUSH_DELAY_MICROS
+    ),
+    pending_bytes: bytes,
+  });
+}
+
+export const flushTrafficStats = spacetimedb.reducer(
+  { onSchedule: trafficFlush },
+  { traffic_flush: trafficFlush.rowType },
+  (ctx, { traffic_flush }) => {
+    updatePlatformStats(ctx, { totalTrafficBytes: traffic_flush.pending_bytes });
+  }
+);
+
+export const clientConnected = spacetimedb.clientConnected((ctx) => {
+  const connectionId = ctx.connectionId?.toHexString();
+  if (!connectionId || ctx.db.activeConnection.connection_id.find(connectionId)) return;
+  ctx.db.activeConnection.insert({ connection_id: connectionId });
+  syncOnlineConnections(ctx);
+});
+
+export const clientDisconnected = spacetimedb.clientDisconnected((ctx) => {
+  const connectionId = ctx.connectionId?.toHexString();
+  if (!connectionId || !ctx.db.activeConnection.connection_id.find(connectionId)) return;
+  ctx.db.activeConnection.connection_id.delete(connectionId);
+  syncOnlineConnections(ctx);
+});
 
 const transferFileResult = t.object('TransferFileResult', {
   id: t.u64(),
@@ -503,6 +617,7 @@ export const uploadFile = spacetimedb.reducer(
       owner_identity: ctx.sender.toHexString(),
       chunk_size_bytes: LEGACY_FILE_CHUNK_SIZE,
     });
+    recordTraffic(ctx, size_bytes);
   }
 );
 
@@ -576,6 +691,7 @@ export const uploadChunk = spacetimedb.reducer(
       next_chunk_index: session.next_chunk_index + 1,
       received_bytes: session.received_bytes + BigInt(content.byteLength),
     });
+    recordTraffic(ctx, BigInt(content.byteLength));
   }
 );
 
@@ -615,11 +731,16 @@ export const sealTransfer = spacetimedb.reducer(
   { transfer_id: t.u64() },
   (ctx, { transfer_id }) => {
     const candidate = requireWritableTransfer(ctx, transfer_id);
-    const hasReadyFile = [...ctx.db.storedFile.by_transfer.filter(transfer_id)]
-      .some((file) => file.ready);
-    if (!hasReadyFile) throw new SenderError('Upload at least one file before sending.');
+    const readyFiles = [...ctx.db.storedFile.by_transfer.filter(transfer_id)]
+      .filter((file) => file.ready);
+    if (!readyFiles.length) throw new SenderError('Upload at least one file before sending.');
+    const totalFileBytes = readyFiles.reduce((total, file) => total + file.size_bytes, 0n);
     ctx.db.transfer.id.update({ ...candidate, sealed: true });
     ctx.db.uploadLease.transfer_id.delete(transfer_id);
+    updatePlatformStats(ctx, {
+      totalFiles: BigInt(readyFiles.length),
+      totalFileBytes,
+    });
   }
 );
 export const updateTransferExpiry = spacetimedb.reducer(
@@ -794,6 +915,7 @@ export const downloadBatch = spacetimedb.httpHandler((ctx, request) => {
         entries.push({ name: names[index], content });
       }
       const body = createZipArchive(entries);
+      recordTraffic(tx, BigInt(body.byteLength));
       return new SyncResponse(body, {
         status: 200,
         headers: {
@@ -897,6 +1019,7 @@ function downloadHandler(headOnly: boolean) {
         responseHeaders['content-range'] =
           `bytes ${range.start}-${range.end}/${file.size_bytes}`;
       }
+      recordTraffic(tx, BigInt(body.byteLength));
       return new SyncResponse(body, {
         status: parsedRange.kind === 'partial' ? 206 : 200,
         headers: responseHeaders,

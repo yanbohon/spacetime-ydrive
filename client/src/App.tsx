@@ -27,8 +27,8 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { useSpacetimeDB } from 'spacetimedb/react';
-import { DbConnection } from './module_bindings';
+import { useSpacetimeDB, useTable } from 'spacetimedb/react';
+import { DbConnection, tables } from './module_bindings';
 import type {
   OwnedTransferResult,
   TransferFileResult,
@@ -40,6 +40,14 @@ import { matchDraftFiles, useUploadTransfer } from './useUploadTransfer';
 
 type Mode = 'send' | 'receive' | 'manage';
 type Notice = { type: 'error' | 'success'; message: string } | null;
+const compactNumberFormatter = new Intl.NumberFormat('zh-CN', {
+  notation: 'compact',
+  maximumFractionDigits: 1,
+});
+
+function formatCount(value: bigint) {
+  return compactNumberFormatter.format(value);
+}
 
 function formatBytes(size: number | bigint) {
   const value = typeof size === 'bigint' ? Number(size) : size;
@@ -104,6 +112,8 @@ function App() {
   const { isActive, getConnection } = useSpacetimeDB();
   const connection = getConnection() as DbConnection | null;
   const initialCode = useMemo(readCodeFromHash, []);
+  const [statsRows, statsReady] = useTable(tables.platformStats);
+  const stats = statsRows[0];
   const [mode, setMode] = useState<Mode>(initialCode ? 'receive' : 'send');
   const tabRefs = useRef<Record<Mode, HTMLButtonElement | null>>({ send: null, receive: null, manage: null });
 
@@ -167,12 +177,12 @@ function App() {
           </div>}
         </section>
 
-        <div className="trust-row" aria-label="快传特性">
-          <span><Check size={14} /> 匿名使用</span>
-          <span><Check size={14} /> 取件码隔离</span>
-          <span><Check size={14} /> 可永久保存</span>
-          <span><Check size={14} /> 支持断点下载</span>
-        </div>
+        <dl className="platform-stats" aria-label="平台实时数据" aria-busy={!statsReady}>
+          <div><dt>累计文件</dt><dd>{stats ? formatCount(stats.totalFiles) : '—'}</dd></div>
+          <div><dt><span className="live-dot" aria-hidden="true" />实时连接</dt><dd>{stats ? formatCount(stats.onlineConnections) : '—'}</dd></div>
+          <div><dt>累计传输</dt><dd>{stats ? formatBytes(stats.totalFileBytes) : '—'}</dd></div>
+          <div><dt>文件流量</dt><dd>{stats ? formatBytes(stats.totalTrafficBytes) : '—'}</dd></div>
+        </dl>
       </main>
     </div>
   );
